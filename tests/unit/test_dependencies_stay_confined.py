@@ -13,7 +13,8 @@ SRC = Path(__file__).resolve().parents[2] / "src" / "readeverything"
 
 #: top-level third-party module -> the only files that may import it
 CONFINED: dict[str, set[str]] = {
-    "langchain_core": {"agent/tools.py"},
+    "langchain_core": {"agent/tools.py", "adapters/vision_langchain.py"},
+    "langchain_openai": {"adapters/vision_langchain.py"},
     "puremagic": {"adapters/detection.py"},
     "charset_normalizer": {"handlers/text.py"},
     "subprocess": set(),
