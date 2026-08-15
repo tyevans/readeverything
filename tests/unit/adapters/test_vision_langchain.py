@@ -157,3 +157,22 @@ async def test_the_factory_passes_the_endpoint_through(monkeypatch: pytest.Monke
     assert captured["base_url"] == "http://x/v1/"
     assert captured["model"] == "m"
     assert model.model_id == "openai/m"
+
+
+def test_thinking_is_off_unless_a_caller_asks_for_it() -> None:
+    """A reasoning model asked to describe a picture spends its budget
+    deciding how to describe the picture. Measured against the live server, a
+    two-frame call with a 300-token budget produced 300 tokens of reasoning
+    and no answer — which this adapter then correctly raises on as an empty
+    completion, having paid for the call.
+
+    Describing an image is not a task reasoning improves, so the default
+    departs from the model's own.
+    """
+    model = build_openai_vision_model(base_url="http://localhost:1/v1", model="m")
+    assert model._chat.extra_body == {"chat_template_kwargs": {"enable_thinking": False}}
+
+
+def test_a_caller_can_ask_for_the_reasoning_channel_back() -> None:
+    model = build_openai_vision_model(base_url="http://localhost:1/v1", model="m", thinking=True)
+    assert model._chat.extra_body == {"chat_template_kwargs": {"enable_thinking": True}}

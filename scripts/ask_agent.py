@@ -60,8 +60,16 @@ async def main() -> None:
 
     agent = create_deep_agent(
         model=ChatOpenAI(
-            base_url=BASE_URL, model=MODEL, api_key="not-needed",
-            timeout=600.0, max_completion_tokens=4000,
+            base_url=BASE_URL,
+            model=MODEL,
+            api_key="not-needed",
+            timeout=600.0,
+            max_completion_tokens=4000,
+            # Thinking off. The model reasons by default, and in an agent loop
+            # that reasoning is paid for on every turn while contributing
+            # nothing a tool call needs — the decision "call inspect_path next"
+            # does not improve with deliberation.
+            extra_body={"chat_template_kwargs": {"enable_thinking": False}},
         ),
         tools=tools,
         system_prompt=(

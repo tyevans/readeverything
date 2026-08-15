@@ -34,10 +34,22 @@ def captioned_video(tmp_path: Path) -> Path:
     out = tmp_path / "clip.mp4"
     subprocess.run(
         [
-            "ffmpeg", "-y", "-v", "error",
-            "-f", "lavfi", "-i", "testsrc=size=64x48:rate=5:duration=5",
-            "-i", str(srt),
-            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:s", "mov_text",
+            "ffmpeg",
+            "-y",
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc=size=64x48:rate=5:duration=5",
+            "-i",
+            str(srt),
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:s",
+            "mov_text",
             str(out),
         ],
         check=True,
@@ -75,3 +87,55 @@ async def test_every_character_still_maps_to_a_span(captioned_video: Path) -> No
     perception = await build_perception(captioned_video.parent)
     rendered = await perception.represent(captioned_video.name, Budget(max_chars=None))
     assert rendered.locator_map.length == len(rendered.text)
+
+
+async def test_an_agent_can_reach_the_words_without_a_model(captioned_video: Path) -> None:
+    """The affordance whose absence made the whole caption path invisible.
+
+    `represent()` had the words from the first day captions were wired, but an
+    agent holds inspect_path/list_paths/invoke_affordance and has no route to
+    `represent()`. So the card announced a readable caption track and then
+    offered nothing but pixels, and a real agent run did the only thing it
+    could: sampled frames, at ~65s and one model call each.
+    """
+    perception = await build_perception(captioned_video.parent)
+    card = await perception.inspect(captioned_video.name)
+    assert "read_transcript" in {a.name for a in card.affordances}
+
+    result = await perception.invoke(captioned_video.name, "read_transcript", {})
+    assert "first thing said" in result.content.text
+    assert "second thing said" in result.content.text
+    assert result.degraded is False
+
+
+async def test_a_window_reads_only_what_is_inside_it(captioned_video: Path) -> None:
+    perception = await build_perception(captioned_video.parent)
+    result = await perception.invoke(
+        captioned_video.name, "read_transcript", {"start_s": 2.5, "end_s": 5.0}
+    )
+    assert "second thing said" in result.content.text
+    assert "first thing said" not in result.content.text
+
+
+async def test_a_file_without_captions_says_so_rather_than_failing(tmp_path: Path) -> None:
+    out = tmp_path / "silent.mp4"
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc=size=64x48:rate=5:duration=2",
+            "-pix_fmt",
+            "yuv420p",
+            str(out),
+        ],
+        check=True,
+    )
+    perception = await build_perception(tmp_path)
+    result = await perception.invoke(out.name, "read_transcript", {})
+    assert result.degraded is True
+    assert "no readable caption track" in result.content.text

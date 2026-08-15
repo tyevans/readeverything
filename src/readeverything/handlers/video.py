@@ -129,6 +129,17 @@ class FrameAtParams(BaseModel):
     )
 
 
+class ReadTranscriptParams(BaseModel):
+    start_s: float = Field(default=0.0, ge=0.0, description="Start of the window to read.")
+    end_s: float | None = Field(
+        default=None,
+        description=(
+            "End of the window to read. Omit to read to the end of the file — cheap, "
+            "since no model is involved, but a long lecture is thousands of words."
+        ),
+    )
+
+
 class DescribeFrameParams(BaseModel):
     seconds: float = Field(
         default=0.0, ge=0.0, description="Point in the timeline to extract a frame from."
@@ -223,6 +234,33 @@ class VideoHandler:
                 level=DetailLevel.SEGMENT,
             )
         ]
+        if self._captions is not None:
+            # Offered whenever an extractor is wired, without probing for a
+            # track first: `affordances()` is synchronous and cheap by
+            # contract, and reading the container to decide would make listing
+            # a file's affordances cost an ffmpeg call. A file with no track
+            # answers by saying so, which is the same shape every other
+            # affordance uses for "nothing there".
+            #
+            # This is the affordance whose absence made the whole caption path
+            # invisible to an agent: `represent()` had the words, and an agent
+            # holding inspect_path/invoke_affordance had no way to reach
+            # `represent()`. The card said "1 readable caption track" and then
+            # offered nothing but pixels.
+            affordances.append(
+                Affordance(
+                    name="read_transcript",
+                    description=(
+                        "Read what is said during a window of the timeline, from the "
+                        "container's own caption track. Costs no model call and is the "
+                        "cheapest way to learn what a video is about — try this before "
+                        "describing frames."
+                    ),
+                    params=ReadTranscriptParams,
+                    requires=frozenset({Capability.FFMPEG}),
+                    level=DetailLevel.SEGMENT,
+                )
+            )
         if self._vision is not None:
             affordances.append(
                 Affordance(
@@ -244,6 +282,12 @@ class VideoHandler:
                 if not isinstance(params, FrameAtParams):
                     raise TypeError(f"expected FrameAtParams, got {type(params).__name__}")
                 return await self._frame_at(ref, params.seconds)
+            case "read_transcript":
+                if self._captions is None:
+                    raise UnknownAffordanceError(name, (a.name for a in self.affordances()))
+                if not isinstance(params, ReadTranscriptParams):
+                    raise TypeError(f"expected ReadTranscriptParams, got {type(params).__name__}")
+                return await self._read_transcript(ref, params.start_s, params.end_s)
             case "describe_frame":
                 if self._vision is None:
                     raise UnknownAffordanceError(name, (a.name for a in self.affordances()))
@@ -252,6 +296,61 @@ class VideoHandler:
                 return await self._describe_frame(ref, params.seconds, params.prompt)
             case _:
                 raise UnknownAffordanceError(name, (a.name for a in self.affordances()))
+
+    async def _read_transcript(
+        self, ref: SourceRef, start_s: float, end_s: float | None
+    ) -> Rendition:
+        """What is said in a window, from the container's own caption track.
+
+        Located by the window actually covered rather than the window asked
+        for: a caller asking for 0-600s of a file whose captions stop at 300s
+        should get a locator that says 300, not one asserting three hundred
+        seconds of silence nobody looked at.
+        """
+        if end_s is not None and end_s <= start_s:
+            return self._degraded_read(
+                ref, f"the requested window {_timestamp(start_s)}-{_timestamp(end_s)} is empty"
+            )
+        try:
+            path = await self._source.local_path(ref.uri)
+        except Exception:
+            return self._degraded_read(ref, "this video has no local path to read captions from")
+        try:
+            facts = await self._probe.probe(path)
+        except Exception as exc:
+            return self._degraded_read(ref, f"the video could not be probed ({exc})")
+        cues, _ = await self._captioned_cues(path, facts)
+        if not cues:
+            return self._degraded_read(ref, "this video carries no readable caption track")
+        limit = facts.duration_s if end_s is None else end_s
+        window = tuple(c for c in cues if c.span.start_s < limit and c.span.end_s > start_s)
+        if not window:
+            return self._degraded_read(
+                ref,
+                f"nothing is said between {_timestamp(start_s)} and {_timestamp(limit)}",
+            )
+        lines = [f"[{_timestamp(c.span.start_s)}] {' '.join(c.text.split())}" for c in window]
+        return Rendition(
+            locator=TimeSpan(
+                start_s=min(c.span.start_s for c in window),
+                end_s=max(c.span.end_s for c in window),
+            ),
+            content=TextContent("\n".join(lines)),
+        )
+
+    def _degraded_read(self, ref: SourceRef, detail: str) -> Rendition:
+        """What every unanswerable `read_transcript` returns.
+
+        Located by `ByteRange` over the whole file rather than by the
+        requested `TimeSpan`, for the reason `_degraded_frame` and
+        `audio._degraded_span` both give: a `TimeSpan` would assert a stretch
+        of timeline this call never established the file has.
+        """
+        return Rendition(
+            locator=ByteRange(0, max(1, ref.size_bytes)),
+            content=TextContent(detail),
+            degraded=True,
+        )
 
     def _degraded_frame(self, ref: SourceRef, seconds: float, detail: str) -> Rendition:
         """What every un-decodable-frame request returns.
