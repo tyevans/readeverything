@@ -104,11 +104,15 @@ class TextHandler:
         text, _ = await self._text(ref)
         if not text:
             raise DomainError(f"{ref.uri} is empty; there is no character range to read")
-        start = min(params.start, len(text) - 1)
-        end = min(params.end, len(text))
-        if start >= end:
-            start, end = 0, 1
-        return Rendition(locator=CharSpan(start, end), content=TextContent(text[start:end]))
+        # Clamp both ends against the text, not just `start`. Clamping `start`
+        # alone silently discarded the caller's `end` whenever `start` was at
+        # or past the last character, always returning exactly one character —
+        # a rendition whose locator did not describe the text beside it.
+        length = len(text)
+        start = max(0, min(params.start, length - 1))
+        end = max(start + 1, min(params.end, length))
+        body = text[start:end]
+        return Rendition(locator=CharSpan(start, end), content=TextContent(body))
 
     async def represent(self, ref: SourceRef, budget: Budget) -> Rendered:
         full, _ = await self._text(ref)

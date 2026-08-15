@@ -55,6 +55,28 @@ async def test_read_range_returns_the_requested_characters_and_its_locator() -> 
     assert rendition.locator.end == 10
 
 
+@pytest.mark.parametrize(
+    ("content", "start", "end"),
+    [(b"x", 1, 5), (b"x", 0, 1), (b"hello", 4, 99), (b"hello", 10, 20)],
+)
+async def test_read_range_returns_a_span_matching_the_text_it_returns(
+    content: bytes, start: int, end: int
+) -> None:
+    """The clamp forced `start` into range and left `end` alone.
+
+    Whenever `start >= len(text) - 1` the caller's `end` was discarded and
+    exactly one character came back regardless of what was asked for. The
+    rendition's own locator is the check: it must describe the text beside it.
+    """
+    handler = TextHandler(source=FakeSource({"f.txt": content}))
+    ref = _ref(uri="f.txt", size_bytes=len(content))
+    rendition = await handler.invoke(ref, "read_range", ReadRangeParams(start=start, end=end))
+    assert isinstance(rendition.content, TextContent)
+    span = rendition.locator
+    assert isinstance(span, CharSpan)
+    assert span.end - span.start == len(rendition.content.text)
+
+
 async def test_read_range_clamps_to_the_end_of_the_text() -> None:
     rendition = await _handler().invoke(_ref(), "read_range", ReadRangeParams(start=12, end=9999))
     assert isinstance(rendition.content, TextContent)
