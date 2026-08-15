@@ -6,8 +6,10 @@ from readeverything.adapters.artifact_store import InMemoryArtifactStore
 from readeverything.adapters.detection import PuremagicDetector
 from readeverything.adapters.hashing import ContentHasher
 from readeverything.adapters.local_source import LocalFileSource
-from readeverything.agent.tools import build_tools
+from readeverything.agent.tools import _render_rendition, build_tools
 from readeverything.domain.capability import CapabilitySet
+from readeverything.domain.locators import BBox
+from readeverything.domain.rendition import ImageContent, Rendition
 from readeverything.handlers.binary import BinaryHandler
 from readeverything.handlers.text import TextHandler
 from readeverything.pipeline.perception import Perception
@@ -80,6 +82,35 @@ async def test_a_missing_required_argument_returns_an_error_string(
     tool = next(t for t in build_tools(perception) if t.name == "inspect_path")
     output = await tool.ainvoke({})
     assert "ERROR" in output
+
+
+def test_image_content_names_an_affordance_that_exists() -> None:
+    """The pack has three tools and none of them is a vision tool.
+
+    The old text told the model to "pass to a vision tool to read it". There is
+    no vision tool. Instructing a model toward a tool that does not exist is
+    the same defect shape as a degradation describing a cause nothing checked —
+    text asserting something nothing established — and it reaches the model.
+    """
+    rendition = Rendition(
+        locator=BBox(page=None, x=0.0, y=0.0, w=1.0, h=1.0),
+        content=ImageContent(data=b"\x89PNG", mime="image/png"),
+    )
+    rendered = _render_rendition(rendition, ("describe_image", "ocr"))
+    assert "vision tool" not in rendered
+    assert "describe_image" in rendered
+
+
+def test_image_content_says_so_plainly_when_nothing_can_read_it() -> None:
+    """With no vision capability the honest answer is that it cannot be read
+    here — not a pointer at an affordance the registry filtered out."""
+    rendition = Rendition(
+        locator=BBox(page=None, x=0.0, y=0.0, w=1.0, h=1.0),
+        content=ImageContent(data=b"\x89PNG", mime="image/png"),
+    )
+    rendered = _render_rendition(rendition, ())
+    assert "vision tool" not in rendered
+    assert "cannot be read" in rendered
 
 
 async def test_a_wrongly_typed_argument_returns_an_error_string(

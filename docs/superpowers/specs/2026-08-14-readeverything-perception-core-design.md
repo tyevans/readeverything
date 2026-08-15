@@ -669,15 +669,21 @@ Recorded here rather than lost, because each is a decision someone will
 otherwise rediscover.
 
 **Owed early in the next plan, and getting more expensive:**
-- Annotate `Perception.hasher` against the new `ContentHashing` port (§5). Every
-  handler added first makes this a wider change.
-- Fix `artifact_key`'s `json.dumps(..., default=str)`: `{"path": Path("a")}` and
-  `{"path": "a"}` collide on one key. Free now — no caller passes non-primitives
-  and the cache is not wired — and a silent wrong-answer bug once it is.
+- ~~Annotate `Perception.hasher` against the new `ContentHashing` port (§5).
+  Every handler added first makes this a wider change.~~ — **closed in Plan 3.**
+  `Perception.hasher` is typed against `ContentHashing`.
+- ~~Fix `artifact_key`'s `json.dumps(..., default=str)`: `{"path": Path("a")}`
+  and `{"path": "a"}` collide on one key. Free now — no caller passes
+  non-primitives and the cache is not wired — and a silent wrong-answer bug
+  once it is.~~ — **closed in Plan 3.** `artifact_key` now raises
+  `DomainError` on a non-primitive value instead of collapsing it through
+  `str`.
 
 **Owed with cache wiring:** `Perception._resolve` re-reads, re-detects and
 re-hashes on every `inspect`/`invoke`/`represent`, so a large-file `invoke`
-re-hashes per affordance call. Three call sites change together.
+re-hashes per affordance call. Three call sites change together. — **closed
+in Plan 3**, along with the composition root (`build_perception`) and
+capability discovery (`readeverything.adapters.probing.discover`).
 
 **Ports specified but deliberately unbuilt**, each landing with the handler that
 implements it: `MediaProbe`, `FrameExtractor`, `AudioExtractor`, `Transcriber`,

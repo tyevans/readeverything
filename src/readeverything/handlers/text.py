@@ -31,6 +31,11 @@ from readeverything.ports.source import SourceReader
 
 _EXCERPT_CHARS = 1000
 
+#: `Degradation.what` for text the handler wrote about a file rather than
+#: extracted from it. See `binary.SYNTHESIZED` — the same string, deliberately,
+#: so a consumer matches one value across every handler.
+SYNTHESIZED = "synthesized description"
+
 
 class ReadRangeParams(BaseModel):
     start: int = Field(default=0, ge=0)
@@ -99,11 +104,15 @@ class TextHandler:
         text, _ = await self._text(ref)
         if not text:
             raise DomainError(f"{ref.uri} is empty; there is no character range to read")
-        start = min(params.start, len(text) - 1)
-        end = min(params.end, len(text))
-        if start >= end:
-            start, end = 0, 1
-        return Rendition(locator=CharSpan(start, end), content=TextContent(text[start:end]))
+        # Clamp both ends against the text, not just `start`. Clamping `start`
+        # alone silently discarded the caller's `end` whenever `start` was at
+        # or past the last character, always returning exactly one character —
+        # a rendition whose locator did not describe the text beside it.
+        length = len(text)
+        start = max(0, min(params.start, length - 1))
+        end = max(start + 1, min(params.end, length))
+        body = text[start:end]
+        return Rendition(locator=CharSpan(start, end), content=TextContent(body))
 
     async def represent(self, ref: SourceRef, budget: Budget) -> Rendered:
         full, _ = await self._text(ref)
@@ -112,6 +121,12 @@ class TextHandler:
             # Only a genuinely empty source earns this. A truncated one is not
             # empty, and saying so would index a false claim about the file.
             text = f"[empty text file: {ref.uri}]"
+            degradations = (
+                Degradation(
+                    what=SYNTHESIZED,
+                    detail="the file is empty; this text describes it",
+                ),
+            )
         elif budget.max_chars is not None and len(full) > budget.max_chars:
             # A zero-width rendition is inexpressible — `CharSpan(0, 0)` raises
             # and `Rendered` requires `locator_map.length == len(text)` — so a

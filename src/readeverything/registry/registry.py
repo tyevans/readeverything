@@ -53,6 +53,11 @@ class MimeTypeRegistry:
         """The handlers that survived capability filtering."""
         return self._handlers
 
+    @property
+    def capabilities(self) -> CapabilitySet:
+        """What this deployment can do. Part of every artifact cache key."""
+        return self._capabilities
+
     def resolve(self, mime: MimeType) -> MediaHandler:
         """The handler for `mime`: most specific rank, then highest priority."""
         best: tuple[MatchRank, int, int] | None = None

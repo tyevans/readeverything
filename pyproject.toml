@@ -25,6 +25,9 @@ langchain = ["langchain-core>=0.3"]
 vision = ["langchain-openai>=0.2", "langchain-core>=0.3"]
 images = ["pillow>=11.0"]
 testing = ["pytest>=8.3"]
+# Pinned below 0.8: deepagents' surface moves fast, and an unpinned dependency
+# on a fast-moving 0.x is how a library acquires breakage it did not choose.
+agents = ["deepagents>=0.7,<0.8"]
 dev = [
     "mypy>=1.13",
     "ruff==0.16.2",
@@ -35,6 +38,7 @@ dev = [
     "import-linter>=2.1",
     "bandit>=1.8",
     "pip-audit>=2.7",
+    "deepagents>=0.7,<0.8",
 ]
 
 [build-system]
@@ -64,12 +68,12 @@ files = ["src", "tests"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 markers = [
-    "integration: requires OS binaries",
+    "integration: real components wired together; no network, no model server",
     "live: requires a running model server",
     "accuracy: quality benchmark, not a pass/fail test",
     "slow: takes more than a second",
 ]
-addopts = "-m 'not integration and not live and not accuracy'"
+addopts = "-m 'not live and not accuracy'"
 
 [tool.importlinter]
 root_packages = ["readeverything"]
@@ -81,6 +85,7 @@ type = "layers"
 containers = ["readeverything"]
 exhaustive = true
 layers = [
+    "composition",
     "testing",
     "agent",
     "pipeline",
@@ -108,7 +113,7 @@ source = ["src/readeverything"]
 branch = true
 
 [tool.coverage.report]
-fail_under = 90
+fail_under = 92
 show_missing = true
 
 [tool.bandit]

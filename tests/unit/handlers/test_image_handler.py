@@ -1,4 +1,6 @@
+import importlib
 import io
+import sys
 
 import pytest
 from PIL import Image
@@ -286,3 +288,16 @@ class TestImageHandlerCompliance(MediaHandlerCompliance):
     @pytest.fixture
     def ref(self, content: bytes) -> SourceRef:
         return _ref()
+
+
+def test_a_missing_pillow_names_the_extra_not_the_package(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`ModuleNotFoundError: No module named 'PIL'` is a true statement that
+    does not help. The user installed `deepagents-read-everything`; the thing
+    they can act on is the name of the extra."""
+    monkeypatch.setitem(sys.modules, "PIL", None)
+    for module in [m for m in sys.modules if m.startswith("readeverything.handlers.image")]:
+        monkeypatch.delitem(sys.modules, module, raising=False)
+    with pytest.raises(ImportError, match=r"images"):
+        importlib.import_module("readeverything.handlers.image")

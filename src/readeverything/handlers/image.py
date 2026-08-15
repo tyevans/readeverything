@@ -19,7 +19,15 @@ from __future__ import annotations
 import io
 from typing import ClassVar
 
-from PIL import Image, UnidentifiedImageError
+try:
+    from PIL import Image, UnidentifiedImageError
+except ImportError as exc:  # pragma: no cover - exercised via a patched sys.modules
+    raise ImportError(
+        "readeverything's image support needs Pillow, which ships in the "
+        "'images' extra: pip install 'deepagents-read-everything[images]'. "
+        "The composition root omits image handling when Pillow is absent, so "
+        "reaching this means the handler was imported directly."
+    ) from exc
 from pydantic import BaseModel, Field, model_validator
 
 from readeverything.domain.affordance import Affordance, DetailLevel

@@ -1,0 +1,126 @@
+"""One function between a directory and a working `Perception`.
+
+Everything here is a convenience over the public constructors and nothing more.
+If this module can do something a caller assembling the pieces by hand cannot,
+that is a bug in the constructors, not a feature of this file — which is why it
+takes the same arguments they do and holds no state of its own.
+
+It reads no environment variables. Every input is an argument, so two
+differently-configured instances can run in one process.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from readeverything.adapters.artifact_store import InMemoryArtifactStore
+from readeverything.adapters.binary_probe import BinaryProbe
+from readeverything.adapters.detection import PuremagicDetector
+from readeverything.adapters.hashing import ContentHasher, StatMemo
+from readeverything.adapters.local_source import LocalFileSource
+from readeverything.adapters.model_probe import ModelProbe
+from readeverything.adapters.probing import discover
+from readeverything.domain.capability import Capability, CapabilitySet
+from readeverything.domain.errors import DomainError
+from readeverything.handlers.binary import BinaryHandler
+from readeverything.handlers.text import TextHandler
+from readeverything.pipeline.perception import Perception
+from readeverything.pipeline.resolution import ResolutionMemo
+from readeverything.ports.artifacts import ArtifactStore
+from readeverything.ports.handler import MediaHandler
+from readeverything.ports.probe import CapabilityProbe
+from readeverything.ports.source import SourceReader
+from readeverything.ports.vision import VisionModel
+from readeverything.registry.registry import MimeTypeRegistry
+
+
+def _capabilities_handlers_can_use(handlers: list[MediaHandler]) -> frozenset[Capability]:
+    """The union of what the registered handlers, and their affordances, need.
+
+    Probing anything outside this set is pure cost: a probed capability that
+    no handler ever consults still enters `CapabilitySet.fingerprint()`, so it
+    still invalidates every cached artifact when it changes on the host,
+    despite never affecting a single rendition. Restricting the probe set to
+    what is actually wired keeps the cache honest about what it depends on.
+    """
+    needed: set[Capability] = set()
+    for handler in handlers:
+        needed |= handler.requires()
+        for affordance in handler.affordances():
+            needed |= affordance.requires
+    return frozenset(needed)
+
+
+def _optional_image_handler(source: SourceReader, vision: VisionModel | None) -> list[MediaHandler]:
+    """`ImageHandler` when Pillow is importable, nothing when it is not.
+
+    Pillow lives behind the `images` extra. A base install must yield a working
+    `Perception` that handles text and binary — narrower, not broken — so the
+    import failure is a registration decision here rather than an exception
+    reaching the caller.
+    """
+    try:
+        from readeverything.handlers.image import ImageHandler
+    except ImportError:
+        return []
+    return [ImageHandler(source=source, vision=vision)]
+
+
+async def build_perception(
+    root: Path | str,
+    *,
+    vision: VisionModel | None = None,
+    capabilities: CapabilitySet | None = None,
+    artifacts: ArtifactStore | None = None,
+    probe_binaries: bool = True,
+) -> Perception:
+    """A `Perception` over `root`, with everything else defaulted.
+
+    `capabilities` given explicitly is used verbatim and nothing is probed —
+    a test must be able to declare any capability set without depending on what
+    happens to be installed on the machine running it.
+
+    When a `vision` model is also given and `capabilities` declares
+    `Capability.VISION`, the two must agree on the model's revision. They are
+    two independent inputs otherwise, and disagreement would mean the artifact
+    cache key does not reliably identify which model produced a cached
+    description — silently correcting one to match the other would hide that
+    the caller declared something false, so this raises instead.
+    """
+    source = LocalFileSource(root=root)
+    handlers: list[MediaHandler] = [
+        TextHandler(source=source),
+        *_optional_image_handler(source, vision),
+        # The fallback claims "*", so it must be last: the registry breaks a
+        # rank tie by registration order, and a fallback registered first would
+        # shadow nothing but would rank ahead of an equally-specific match.
+        BinaryHandler(source=source),
+    ]
+    if capabilities is None:
+        probes: list[CapabilityProbe] = [ModelProbe(vision=vision)]
+        if probe_binaries:
+            probes.append(BinaryProbe())
+        # `BinaryProbe` stays exported for callers with custom handlers that
+        # do consume FFMPEG/EXIFTOOL/LIBREOFFICE/TESSERACT; for the bundled
+        # handlers above, only VISION is ever referenced, so restricting the
+        # probe to what is actually used makes it correctly a no-op here.
+        capabilities = await discover(
+            probes=probes, capabilities=_capabilities_handlers_can_use(handlers)
+        )
+    elif vision is not None and Capability.VISION in capabilities.revisions:
+        declared = capabilities.revisions[Capability.VISION]
+        if declared != vision.model_id:
+            raise DomainError(
+                f"capabilities declares Capability.VISION revision {declared!r}, "
+                f"but the injected vision model reports model_id {vision.model_id!r}; "
+                "these must agree or the artifact cache key would misdescribe "
+                "which model produced a cached description"
+            )
+    return Perception(
+        source=source,
+        detector=PuremagicDetector(),
+        hasher=ContentHasher(source=source, memo=StatMemo()),
+        registry=MimeTypeRegistry(handlers=handlers, capabilities=capabilities),
+        artifacts=InMemoryArtifactStore() if artifacts is None else artifacts,
+        memo=ResolutionMemo(),
+    )

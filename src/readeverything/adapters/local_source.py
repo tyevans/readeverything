@@ -59,7 +59,10 @@ class LocalFileSource:
 
     async def stream(self, uri: str, *, chunk_size: int = 1 << 20) -> AsyncIterator[bytes]:
         path = self._resolve(uri)
-        handle = await asyncio.to_thread(path.open, "rb")
+        try:
+            handle = await asyncio.to_thread(path.open, "rb")
+        except OSError as exc:
+            raise SourceUnreadableError(f"cannot read {uri!r}: {exc}") from exc
         try:
             while True:
                 chunk = await asyncio.to_thread(handle.read, chunk_size)
@@ -78,6 +81,8 @@ class LocalFileSource:
         base = self._resolve(uri)
 
         def _walk() -> list[str]:
+            if not base.is_dir():
+                raise SourceUnreadableError(f"{uri!r} is not a directory: {base}")
             return sorted(str(p.relative_to(self._root)) for p in base.rglob("*") if p.is_file())
 
         try:

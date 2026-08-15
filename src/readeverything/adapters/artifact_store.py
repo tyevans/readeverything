@@ -30,6 +30,10 @@ class InMemoryArtifactStore:
     async def put(self, key: str, value: bytes) -> None:
         self._entries.setdefault(key, value)
 
+    def keys(self) -> frozenset[str]:
+        """Every key currently stored. For tests that assert on cache shape."""
+        return frozenset(self._entries)
+
 
 class FilesystemArtifactStore:
     """A store backed by a directory, sharded two levels to keep dirs small."""

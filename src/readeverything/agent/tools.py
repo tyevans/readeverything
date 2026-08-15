@@ -78,14 +78,33 @@ def _render_card(card: Card) -> str:
     )
 
 
-def _render_rendition(rendition: Rendition) -> str:
+#: Affordances that turn image bytes into something a text model can read.
+#: Named here so the rendering and the handler cannot drift apart silently.
+_IMAGE_READING_AFFORDANCES = ("describe_image", "ocr")
+
+
+def _render_rendition(rendition: Rendition, affordances: tuple[str, ...] = ()) -> str:
     match rendition.content:
         case TextContent(text=text):
             body = text
         case StructuredContent(rows=rows):
             body = json.dumps(list(rows), indent=2)
         case ImageContent(data=data, mime=mime):
-            body = f"[{mime} image, {len(data)} bytes — pass to a vision tool to read it]"
+            usable = [a for a in _IMAGE_READING_AFFORDANCES if a in affordances]
+            if usable:
+                route = " or ".join(usable)
+                body = (
+                    f"[{mime} image, {len(data)} bytes — "
+                    f"call invoke_affordance with {route} to read it]"
+                )
+            else:
+                # No vision capability is registered here. Saying so is true and
+                # actionable; pointing at an affordance the registry filtered
+                # out would send the model after a tool call that cannot work.
+                body = (
+                    f"[{mime} image, {len(data)} bytes — "
+                    f"cannot be read here: no vision capability is configured]"
+                )
         case _:
             body = f"[unrenderable content: {type(rendition.content).__name__}]"
     marker = " (degraded)" if rendition.degraded else ""
@@ -107,7 +126,19 @@ def build_tools(perception: Perception) -> list[BaseTool]:
     async def invoke_affordance(
         uri: str, affordance: str, params: Mapping[str, Any] | None = None
     ) -> str:
-        return _render_rendition(await perception.invoke(uri, affordance, params or {}))
+        rendition = await perception.invoke(uri, affordance, params or {})
+        if isinstance(rendition.content, ImageContent):
+            # Only the ImageContent branch of `_render_rendition` needs the
+            # card, to say which affordances can read the image back as text.
+            # Fetching it unconditionally would pay `inspect`'s full
+            # decode/describe cost on every call, for a hint used nowhere
+            # else — and would fail invocations whose `describe` breaks even
+            # when `invoke` itself would have succeeded.
+            card = await perception.inspect(uri)
+            affordance_names = tuple(a.name for a in card.affordances)
+        else:
+            affordance_names = ()
+        return _render_rendition(rendition, affordance_names)
 
     async def _inspect(uri: str) -> str:
         return (await inspect_path(uri)).render()

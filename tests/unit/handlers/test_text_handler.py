@@ -11,12 +11,12 @@ from readeverything.testing.handler_compliance import MediaHandlerCompliance
 CONTENT = b"alpha\nbeta\ngamma\n"
 
 
-def _ref() -> SourceRef:
+def _ref(*, uri: str = "a.txt", size_bytes: int = len(CONTENT)) -> SourceRef:
     return SourceRef(
-        uri="a.txt",
+        uri=uri,
         mime=MimeType.parse("text/plain"),
         content_hash=ContentHash("a" * 64),
-        size_bytes=len(CONTENT),
+        size_bytes=size_bytes,
     )
 
 
@@ -53,6 +53,28 @@ async def test_read_range_returns_the_requested_characters_and_its_locator() -> 
     assert isinstance(rendition.locator, CharSpan)
     assert rendition.locator.start == 6
     assert rendition.locator.end == 10
+
+
+@pytest.mark.parametrize(
+    ("content", "start", "end"),
+    [(b"x", 1, 5), (b"x", 0, 1), (b"hello", 4, 99), (b"hello", 10, 20)],
+)
+async def test_read_range_returns_a_span_matching_the_text_it_returns(
+    content: bytes, start: int, end: int
+) -> None:
+    """The clamp forced `start` into range and left `end` alone.
+
+    Whenever `start >= len(text) - 1` the caller's `end` was discarded and
+    exactly one character came back regardless of what was asked for. The
+    rendition's own locator is the check: it must describe the text beside it.
+    """
+    handler = TextHandler(source=FakeSource({"f.txt": content}))
+    ref = _ref(uri="f.txt", size_bytes=len(content))
+    rendition = await handler.invoke(ref, "read_range", ReadRangeParams(start=start, end=end))
+    assert isinstance(rendition.content, TextContent)
+    span = rendition.locator
+    assert isinstance(span, CharSpan)
+    assert span.end - span.start == len(rendition.content.text)
 
 
 async def test_read_range_clamps_to_the_end_of_the_text() -> None:
@@ -137,7 +159,26 @@ async def test_a_genuinely_empty_file_keeps_its_placeholder() -> None:
     """Guard against fixing the false-empty claim by deleting the true one."""
     rendered = await _empty_handler().represent(_empty_ref(), Budget(max_chars=None))
     assert rendered.text == "[empty text file: empty.txt]"
-    assert rendered.degradations == ()
+    assert any(d.what == "synthesized description" for d in rendered.degradations)
+
+
+async def test_the_empty_file_placeholder_announces_that_it_is_synthesized() -> None:
+    """`[empty text file: x]` is 24 characters mapped over a file of zero.
+
+    The placeholder is correct behaviour and must stay. What must not stay is
+    an indexer being unable to tell that those characters are not in the file.
+    """
+    handler = TextHandler(source=FakeSource({"empty.txt": b""}))
+    rendered = await handler.represent(_ref(uri="empty.txt", size_bytes=0), Budget(max_chars=None))
+    assert rendered.text.startswith("[empty text file:")
+    assert any(d.what == "synthesized description" for d in rendered.degradations)
+
+
+async def test_extracted_text_is_not_announced_as_synthesized() -> None:
+    """The marker must distinguish. A marker on everything distinguishes nothing."""
+    handler = TextHandler(source=FakeSource({"real.txt": b"actual file content"}))
+    rendered = await handler.represent(_ref(uri="real.txt", size_bytes=19), Budget(max_chars=None))
+    assert not any(d.what == "synthesized description" for d in rendered.degradations)
 
 
 class TestTextHandlerCompliance(MediaHandlerCompliance):

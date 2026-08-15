@@ -2,6 +2,7 @@ from pathlib import Path
 
 from readeverything.adapters.hashing import ContentHasher, StatMemo
 from readeverything.adapters.local_source import LocalFileSource
+from readeverything.domain.identity import ContentHash
 
 
 async def test_identical_bytes_hash_identically(tmp_path: Path) -> None:
@@ -36,3 +37,17 @@ async def test_editing_a_file_changes_its_hash_through_the_memo(tmp_path: Path) 
     before = await hasher.hash("a.txt")
     path.write_bytes(b"hello there")
     assert await hasher.hash("a.txt") != before
+
+
+def test_a_memo_for_a_vanished_file_misses_rather_than_raising(tmp_path: Path) -> None:
+    """A file deleted between put and get must be a miss.
+
+    The memo is an optimisation: a miss costs a rehash, never a wrong answer.
+    Raising here would turn a stale optimisation into a failed read.
+    """
+    path = tmp_path / "gone.txt"
+    path.write_bytes(b"data")
+    memo = StatMemo()
+    memo.put(path, ContentHash("abc"))
+    path.unlink()
+    assert memo.get(path) is None

@@ -12,14 +12,18 @@ every handler and let a malformed call reach adapter code.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from readeverything.adapters.cache_key import artifact_key
+from readeverything.adapters.rendition_codec import decode_rendition, encode_rendition
 from readeverything.domain.affordance import Affordance
 from readeverything.domain.card import Card
-from readeverything.domain.errors import UnknownAffordanceError
+from readeverything.domain.errors import DomainError, UnknownAffordanceError
 from readeverything.domain.identity import SourceRef
 from readeverything.domain.rendition import Budget, Rendered, Rendition
+from readeverything.pipeline.resolution import ResolutionMemo, stat_key
 from readeverything.ports.artifacts import ArtifactStore
 from readeverything.ports.detection import MimeDetector
 from readeverything.ports.handler import MediaHandler
@@ -41,21 +45,36 @@ class Perception:
         hasher: ContentHashing,
         registry: MimeTypeRegistry,
         artifacts: ArtifactStore,
+        memo: ResolutionMemo | None = None,
     ) -> None:
         self._source = source
         self._detector = detector
         self._hasher = hasher
         self._registry = registry
         self._artifacts = artifacts
+        self._memo = memo
+
+    @property
+    def registry(self) -> MimeTypeRegistry:
+        """The registry this perception dispatches through."""
+        return self._registry
 
     async def _ref(self, uri: str) -> SourceRef:
+        key = None if self._memo is None else await stat_key(self._source, uri)
+        if self._memo is not None:
+            cached = self._memo.get(uri, key)
+            if cached is not None:
+                return cached
         head = await self._source.read_range(uri, 0, _HEAD_BYTES)
-        return SourceRef(
+        ref = SourceRef(
             uri=uri,
             mime=await self._detector.detect(uri, head),
             content_hash=await self._hasher.hash(uri),
             size_bytes=await self._source.size(uri),
         )
+        if self._memo is not None:
+            self._memo.put(uri, key, ref)
+        return ref
 
     async def _resolve(self, uri: str) -> tuple[SourceRef, MediaHandler]:
         ref = await self._ref(uri)
@@ -85,7 +104,36 @@ class Perception:
         """Invoke a named affordance. Raises if it is not available here."""
         ref, handler = await self._resolve(uri)
         affordance = self._affordance(handler, name)
-        return await handler.invoke(ref, name, affordance.params.model_validate(dict(params)))
+        validated = affordance.params.model_validate(dict(params))
+
+        # `handler_version` of 0 means the handler is opting out: its output is
+        # cheap or nondeterministic enough that an artifact would cost more than
+        # it saves. The decision belongs to the handler, which knows what it
+        # does, not to the pipeline, which does not.
+        if handler.handler_version == 0:
+            return await handler.invoke(ref, name, validated)
+
+        key = artifact_key(
+            content_hash=ref.content_hash,
+            handler_id=handler.handler_id,
+            handler_version=handler.handler_version,
+            affordance=name,
+            params=validated.model_dump(mode="json"),
+            capabilities=self._registry.capabilities,
+        )
+        cached = await self._artifacts.get(key)
+        if cached is not None:
+            try:
+                return decode_rendition(cached)
+            except (DomainError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+                # An unreadable entry is a miss, not a failure. A persistent
+                # store survives version changes and nothing evicts it, so
+                # raising here would make one corrupt entry poison this
+                # derivation forever.
+                pass
+        rendition = await handler.invoke(ref, name, validated)
+        await self._artifacts.put(key, encode_rendition(rendition))
+        return rendition
 
     async def represent(self, uri: str, budget: Budget) -> Rendered:
         """Flatten `uri` for indexing: text plus locator map plus barriers."""

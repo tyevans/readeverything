@@ -1,3 +1,5 @@
+import pytest
+
 from readeverything.adapters.detection import PuremagicDetector
 from readeverything.domain.identity import MimeType
 
@@ -29,3 +31,22 @@ async def test_empty_content_is_octet_stream() -> None:
     assert await PuremagicDetector().detect("empty", b"") == MimeType.parse(
         "application/octet-stream"
     )
+
+
+async def test_a_detector_whose_library_raises_still_returns_a_mimetype(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """puremagic raising must degrade to the fallback, not propagate.
+
+    Detection sits in front of every read. A library that raises on a malformed
+    header would take down every call for that file, so the except exists — it
+    had simply never run.
+    """
+    import puremagic
+
+    def _boom(*args: object, **kwargs: object) -> object:
+        raise ValueError("malformed header")
+
+    monkeypatch.setattr(puremagic, "magic_string", _boom)
+    mime = await PuremagicDetector().detect("f.bin", b"\x00\x01")
+    assert str(mime) == "application/octet-stream"
