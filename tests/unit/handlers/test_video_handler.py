@@ -11,8 +11,12 @@ from readeverything.domain.capability import Capability
 from readeverything.domain.errors import UnknownAffordanceError
 from readeverything.domain.identity import ContentHash, MediaKind, MimeType, SourceRef
 from readeverything.domain.locators import ByteRange, TimeSpan
-from readeverything.domain.rendition import Budget, Rendered
-from readeverything.handlers.video import VideoHandler
+from readeverything.domain.rendition import Budget, ImageContent, Rendered, TextContent
+from readeverything.handlers.video import (
+    DescribeFrameParams,
+    FrameAtParams,
+    VideoHandler,
+)
 from readeverything.ports.frames import FrameExtractor
 from readeverything.ports.streams import MediaFacts, StreamInfo, StreamProbe
 from readeverything.testing.fakes import FakeVision
@@ -376,11 +380,55 @@ async def test_a_budget_of_zero_still_keeps_one_character(sample_video: str) -> 
 # --- affordances --------------------------------------------------------------
 
 
-async def test_no_affordances_are_offered_yet() -> None:
+async def test_frame_at_returns_an_image_located_in_time(sample_video: str) -> None:
+    rendition = await _handler(sample_video).invoke(_ref(), "frame_at", FrameAtParams(seconds=2.5))
+    assert isinstance(rendition.content, ImageContent)
+    assert rendition.content.data.startswith(b"\x89PNG")
+    assert isinstance(rendition.locator, TimeSpan)
+
+
+async def test_a_frame_past_the_end_degrades_and_says_why(sample_video: str) -> None:
+    """Never an empty image presented as a frame — the measured trap."""
+    rendition = await _handler(sample_video).invoke(
+        _ref(), "frame_at", FrameAtParams(seconds=999.0)
+    )
+    assert rendition.degraded
+    assert not isinstance(rendition.content, ImageContent)
+
+
+async def test_frame_at_is_offered_without_vision() -> None:
     handler = _stub_handler(_facts())
-    assert handler.affordances() == ()
+    names = {a.name for a in handler.affordances()}
+    assert "frame_at" in names
+    assert "describe_frame" not in names
+
+
+async def test_describe_frame_requires_vision_to_be_offered() -> None:
+    handler = _stub_handler(_facts(), vision=FakeVision())
+    names = {a.name for a in handler.affordances()}
+    assert "describe_frame" in names
+
+
+async def test_describe_frame_returns_a_description_located_in_time(sample_video: str) -> None:
+    rendition = await _handler(sample_video, vision=FakeVision()).invoke(
+        _ref(), "describe_frame", DescribeFrameParams(seconds=2.5)
+    )
+    assert isinstance(rendition.content, TextContent)
+    assert isinstance(rendition.locator, TimeSpan)
+    assert not rendition.degraded
+
+
+async def test_describe_frame_is_unknown_without_vision(sample_video: str) -> None:
     with pytest.raises(UnknownAffordanceError):
-        await handler.invoke(_ref(), "frame_at", None)  # type: ignore[arg-type]
+        await _handler(sample_video, vision=None).invoke(
+            _ref(), "describe_frame", DescribeFrameParams(seconds=2.5)
+        )
+
+
+async def test_an_unknown_affordance_raises() -> None:
+    handler = _stub_handler(_facts())
+    with pytest.raises(UnknownAffordanceError):
+        await handler.invoke(_ref(), "nonexistent", None)  # type: ignore[arg-type]
 
 
 def test_a_non_positive_sample_interval_is_rejected() -> None:

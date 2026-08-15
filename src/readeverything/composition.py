@@ -90,6 +90,25 @@ def _optional_pdf_handler(source: SourceReader, vision: VisionModel | None) -> l
     return [PdfHandler(source=source, probe=PdfiumProbe(), recognizer=recognizer)]
 
 
+def _video_handler(source: SourceReader, vision: VisionModel | None) -> list[MediaHandler]:
+    """`VideoHandler`, unconditionally.
+
+    Unlike `_optional_image_handler`/`_optional_pdf_handler`, there is no
+    Python package to guard: ffmpeg is an OS binary, not an import. The
+    registry already drops any handler whose `requires()` is unsatisfied, so
+    this constructs the handler and lets capability filtering decide whether
+    it survives — the same "tool exists but returns sorry" trap that guards
+    an import here would otherwise reintroduce.
+    """
+    from readeverything.adapters.ffmpeg_frames import FfmpegFrames
+    from readeverything.adapters.ffprobe_streams import FfprobeStreams
+    from readeverything.handlers.video import VideoHandler
+
+    return [
+        VideoHandler(source=source, probe=FfprobeStreams(), frames=FfmpegFrames(), vision=vision)
+    ]
+
+
 async def build_perception(
     root: Path | str,
     *,
@@ -116,6 +135,7 @@ async def build_perception(
         TextHandler(source=source),
         *_optional_image_handler(source, vision),
         *_optional_pdf_handler(source, vision),
+        *_video_handler(source, vision),
         # The fallback claims "*", so it must be last: the registry breaks a
         # rank tie by registration order, and a fallback registered first would
         # shadow nothing but would rank ahead of an equally-specific match.
@@ -125,10 +145,10 @@ async def build_perception(
         probes: list[CapabilityProbe] = [ModelProbe(vision=vision)]
         if probe_binaries:
             probes.append(BinaryProbe())
-        # `BinaryProbe` stays exported for callers with custom handlers that
-        # do consume FFMPEG/EXIFTOOL/LIBREOFFICE/TESSERACT; for the bundled
-        # handlers above, only VISION is ever referenced, so restricting the
-        # probe to what is actually used makes it correctly a no-op here.
+        # `BinaryProbe` checks every OS binary it knows about
+        # (FFMPEG/EXIFTOOL/LIBREOFFICE/TESSERACT); `VideoHandler` is now the
+        # first bundled handler to reference one (FFMPEG), so restricting the
+        # probe to what is actually used keeps the others a no-op here.
         capabilities = await discover(
             probes=probes, capabilities=_capabilities_handlers_can_use(handlers)
         )

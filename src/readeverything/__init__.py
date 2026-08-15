@@ -75,6 +75,7 @@ if TYPE_CHECKING:
     from readeverything.handlers.image import ImageHandler as ImageHandler
     from readeverything.handlers.pdf import PdfHandler as PdfHandler
     from readeverything.handlers.text import TextHandler as TextHandler
+    from readeverything.handlers.video import VideoHandler as VideoHandler
     from readeverything.pipeline.perception import Perception as Perception
     from readeverything.pipeline.resolution import ResolutionMemo as ResolutionMemo
     from readeverything.ports.artifacts import ArtifactStore as ArtifactStore
@@ -171,6 +172,7 @@ _LAZY: dict[str, str] = {
     "ToolResult": "readeverything.agent.results",
     "TranscriptCue": "readeverything.domain.rendition",
     "UnknownAffordanceError": "readeverything.domain.errors",
+    "VideoHandler": "readeverything.handlers.video",
     "VisionModel": "readeverything.ports.vision",
     "VisionTextRecognizer": "readeverything.adapters.vision_recognizer",
     "build_openai_vision_model": "readeverything.adapters.vision_langchain",

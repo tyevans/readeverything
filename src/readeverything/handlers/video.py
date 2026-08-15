@@ -24,9 +24,9 @@ from __future__ import annotations
 
 from typing import ClassVar
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from readeverything.domain.affordance import Affordance
+from readeverything.domain.affordance import Affordance, DetailLevel
 from readeverything.domain.capability import Capability
 from readeverything.domain.card import Card, Segment
 from readeverything.domain.errors import UnknownAffordanceError
@@ -36,8 +36,10 @@ from readeverything.domain.locators import ByteRange, CharSpan, TimeSpan
 from readeverything.domain.rendition import (
     Budget,
     Degradation,
+    ImageContent,
     Rendered,
     Rendition,
+    TextContent,
 )
 from readeverything.ports.frames import FrameExtractor
 from readeverything.ports.source import SourceReader
@@ -64,6 +66,21 @@ FALLBACK_FRAME_DURATION_S = 1.0 / 25.0
 MOMENT_SEPARATOR = "\n"
 
 _FRAME_PROMPT = "Describe what is visible in this video frame, in one or two sentences."
+
+
+class FrameAtParams(BaseModel):
+    seconds: float = Field(
+        default=0.0, ge=0.0, description="Point in the timeline to extract a frame from."
+    )
+
+
+class DescribeFrameParams(BaseModel):
+    seconds: float = Field(
+        default=0.0, ge=0.0, description="Point in the timeline to extract a frame from."
+    )
+    prompt: str = Field(
+        default=_FRAME_PROMPT, description="What to ask the vision model about the frame."
+    )
 
 
 def _timestamp(seconds: float) -> str:
@@ -115,11 +132,104 @@ class VideoHandler:
         return frozenset({Capability.FFMPEG})
 
     def affordances(self) -> tuple[Affordance, ...]:
-        """None yet — `frame_at` and `describe_frame` are the next task's work."""
-        return ()
+        affordances: list[Affordance] = [
+            Affordance(
+                name="frame_at",
+                description="Extract one video frame, as a PNG image, at a point in time.",
+                params=FrameAtParams,
+                requires=frozenset({Capability.FFMPEG}),
+                level=DetailLevel.SEGMENT,
+            )
+        ]
+        if self._vision is not None:
+            affordances.append(
+                Affordance(
+                    name="describe_frame",
+                    description=(
+                        "Extract a video frame and describe it with a vision model in one "
+                        "call, saving the round trip through describe_image."
+                    ),
+                    params=DescribeFrameParams,
+                    requires=frozenset({Capability.FFMPEG, Capability.VISION}),
+                    level=DetailLevel.DEEP,
+                )
+            )
+        return tuple(affordances)
 
     async def invoke(self, ref: SourceRef, name: str, params: BaseModel) -> Rendition:
-        raise UnknownAffordanceError(name, (a.name for a in self.affordances()))
+        match name:
+            case "frame_at":
+                if not isinstance(params, FrameAtParams):
+                    raise TypeError(f"expected FrameAtParams, got {type(params).__name__}")
+                return await self._frame_at(ref, params.seconds)
+            case "describe_frame":
+                if self._vision is None:
+                    raise UnknownAffordanceError(name, (a.name for a in self.affordances()))
+                if not isinstance(params, DescribeFrameParams):
+                    raise TypeError(f"expected DescribeFrameParams, got {type(params).__name__}")
+                return await self._describe_frame(ref, params.seconds, params.prompt)
+            case _:
+                raise UnknownAffordanceError(name, (a.name for a in self.affordances()))
+
+    def _degraded_frame(self, ref: SourceRef, seconds: float, detail: str) -> Rendition:
+        """What every un-decodable-frame request returns.
+
+        Located by `ByteRange` over the whole file rather than a `TimeSpan` at
+        `seconds`: a `TimeSpan` would assert a moment the video does not have.
+        The same reasoning `PdfHandler._degraded_text` applies to a page number
+        past the end.
+        """
+        return Rendition(
+            locator=ByteRange(0, max(1, ref.size_bytes)), content=TextContent(detail), degraded=True
+        )
+
+    async def _frame_at(self, ref: SourceRef, seconds: float) -> Rendition:
+        try:
+            path = await self._source.local_path(ref.uri)
+        except Exception:
+            return self._degraded_frame(ref, seconds, f"{ref.uri} could not be read")
+        try:
+            frame = await self._frames.frame_at(path, seconds)
+        except Exception:
+            frame = None
+        if frame is None:
+            return self._degraded_frame(
+                ref, seconds, f"no frame could be decoded at {_timestamp(seconds)}"
+            )
+        frame_span = TimeSpan(seconds, seconds + FALLBACK_FRAME_DURATION_S)
+        return Rendition(locator=frame_span, content=ImageContent(data=frame, mime="image/png"))
+
+    async def _describe_frame(self, ref: SourceRef, seconds: float, prompt: str) -> Rendition:
+        if self._vision is None:
+            raise UnknownAffordanceError("describe_frame", (a.name for a in self.affordances()))
+        try:
+            path = await self._source.local_path(ref.uri)
+        except Exception:
+            return self._degraded_frame(ref, seconds, f"{ref.uri} could not be read")
+        try:
+            frame = await self._frames.frame_at(path, seconds)
+        except Exception:
+            frame = None
+        if frame is None:
+            return self._degraded_frame(
+                ref, seconds, f"no frame could be decoded at {_timestamp(seconds)}"
+            )
+        try:
+            text = await self._vision.describe(frame, "image/png", prompt)
+        except Exception:
+            return self._degraded_frame(
+                ref,
+                seconds,
+                f"the vision model failed to describe the frame at {_timestamp(seconds)}",
+            )
+        if not text.strip():
+            return self._degraded_frame(
+                ref,
+                seconds,
+                f"the vision model returned no description for the frame at {_timestamp(seconds)}",
+            )
+        frame_span = TimeSpan(seconds, seconds + FALLBACK_FRAME_DURATION_S)
+        return Rendition(locator=frame_span, content=TextContent(" ".join(text.split())))
 
     async def _facts(self, ref: SourceRef) -> tuple[MediaFacts | None, str | None]:
         """The probe's answer and the path it was read from, or `(None, path)`.
