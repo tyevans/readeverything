@@ -10,11 +10,24 @@ so nothing in `readeverything` waits on this. What waits is turning a `Rendered`
 into a `SourceDocument` redstring can chunk without losing where the text came
 from.
 
-**What the revision changed:** barriers moved off `SourceSpan` and onto
+**What the first revision changed:** barriers moved off `SourceSpan` and onto
 `SourceDocument`, because building the producer proved a barrier need not fall
 on a span boundary. Details in R1/R2 below. The rest of the RFC — opaque
 payloads, accumulation for repeated text, provenance reaching retrieval —
 survived contact with the implementation unchanged.
+
+**What the second contact changed: nothing, and that is the finding.** The
+producing side has since grown a second and third way of knowing what a span
+says — a container's own caption track, and a transcript heard by an ASR model,
+alongside the frame descriptions it already had. Each is a different KIND of
+evidence about the same timeline, and a citation that confused them would
+attribute speech to a picture or put words in a speaker's mouth that a caption
+author wrote. That is exactly the sort of distinction a schema tends to absorb
+one field at a time. It did not need to here, because the payload is opaque:
+the kind rides inside it and redstring is no more aware of it than of a page
+number. See "Evidence has kinds" below — recorded because a boundary that
+survives a second, unanticipated demand is worth more evidence than one that
+merely survived its first.
 
 ---
 
@@ -260,6 +273,53 @@ covers several transcript cues, and the citation is the union of their spans.
 
 ---
 
+## Evidence has kinds, and redstring must not learn them
+
+A single `SourceDocument` produced from one video now interleaves three kinds of
+span, and they are not interchangeable:
+
+| Payload kind | Where the words came from | What a citation may claim |
+|---|---|---|
+| a frame description | a vision model shown one frame | this was **visible** at this moment |
+| a caption cue | the container's own subtitle track | someone **wrote** this about this moment |
+| a transcript cue | an ASR model given the audio | a model **heard** this at this moment |
+
+The distinction is not pedantry. A caption track is authored: frequently
+condensed for reading speed rather than verbatim, sometimes translated, and
+routinely used for sound nobody spoke — the first cue of the file that drove
+this work is `[music playing]`. Rendering that as speech asserts a person said
+words no person said. Equally, a frame description is a model's claim about
+pixels, and quoting it as dialogue would invent a speaker.
+
+**This changes nothing in this RFC, and that is the point.** The kind travels in
+`SourceSpan.payload` as one more opaque key, indistinguishable to redstring from
+a page number or a message id. Three consequences worth stating explicitly,
+because each is a place a future contributor might reasonably reach for a schema
+change and should not:
+
+- **No `kind` field on `SourceSpan`.** The moment redstring names one kind it
+  owes names to the rest — a page is not an utterance, an email header is not a
+  scene — and the payload stops being opaque. The caller already distinguishes
+  them; the transport does not need to.
+- **No validation that a document's payloads are homogeneous.** They are not,
+  legitimately: one video's spans mix all three kinds, in timestamp order, and a
+  chunk spanning a moment where someone talks over a visible slide honestly
+  overlaps both.
+- **Accumulation is unaffected but becomes more visible.** The multi-valued
+  provenance argued above already means `metadata["spans"]` is a list; with
+  mixed kinds, that list routinely holds payloads a renderer must present
+  *differently* rather than concatenate. Callers assuming homogeneity will
+  produce citations that read as though a narrator described the screen.
+
+The general form of the claim: **provenance carries not just where a passage
+came from but what kind of knowing produced it**, and only the caller can say
+what its kinds mean. A text-only reader of this RFC can reach the same place
+without any media — a document assembled from a scanned page's OCR and its
+publisher-supplied text has two kinds of knowing about the same words, one
+measured and one asserted, and a careful citation distinguishes them.
+
+---
+
 ## Alternatives rejected
 
 **Extend `Provenance`.** It describes the *claiming* of an entity — who said it,
@@ -331,11 +391,18 @@ is why the compliance suite gains a barrier case (below).
 - [ ] The chunk-store compliance suite gains a barrier case, so third-party
       adapters and chunkers inherit the contract.
 - [ ] An ADR records the accumulation decision and the reserved `"spans"` key.
+- [ ] A test pins that payloads within one document may be heterogeneous — two
+      spans whose payloads share no keys round-trip and intersect normally. This
+      is the mixed-evidence case, and it must be a test rather than a comment,
+      because "all spans in a document look alike" is the assumption a future
+      optimisation would quietly adopt.
 
 ## Suggested ADRs
 
 - *Spans are the caller's, and redstring does not read them* — why the payload is
-  opaque, and why this is the boundary that keeps redstring text-only.
+  opaque, and why this is the boundary that keeps redstring text-only. Now with a
+  second witness: the producing side grew two new kinds of evidence after this
+  RFC was written and needed no schema change to carry them.
 - *A repeated passage has repeated provenance* — content-addressed identity makes
   provenance multi-valued; accumulation mirrors `entity_ids`.
 

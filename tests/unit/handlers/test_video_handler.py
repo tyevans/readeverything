@@ -13,12 +13,13 @@ from readeverything.adapters.ffmpeg_frames import FfmpegFrames
 from readeverything.adapters.ffprobe_streams import FfprobeStreams
 from readeverything.adapters.semaphore_limiter import SemaphoreLimiter
 from readeverything.domain.capability import Capability
-from readeverything.domain.errors import UnknownAffordanceError
+from readeverything.domain.errors import InfrastructureError, UnknownAffordanceError
 from readeverything.domain.identity import ContentHash, MediaKind, MimeType, SourceRef
 from readeverything.domain.locators import ByteRange, TimeSpan
 from readeverything.domain.observation import OperationProgressed
 from readeverything.domain.rendition import (
     Budget,
+    CueSource,
     ImageContent,
     Rendered,
     SpeakerId,
@@ -26,17 +27,24 @@ from readeverything.domain.rendition import (
     TranscriptCue,
 )
 from readeverything.handlers.video import (
+    CAPTION_MARKER,
     MOMENT_SEPARATOR,
     SPEECH_MARKER,
     DescribeFrameParams,
     FrameAtParams,
     VideoHandler,
+    WatchSegmentParams,
+    _clip_cost,
+    _spoken,
 )
 from readeverything.ports.frames import FrameExtractor
 from readeverything.ports.streams import MediaFacts, StreamInfo, StreamProbe
 from readeverything.testing.fakes import (
+    FakeCaptions,
+    FakeClipModel,
     FakeTranscriber,
     FakeVision,
+    RaisingCaptions,
     RaisingObserver,
     RecordingObserver,
 )
@@ -248,23 +256,45 @@ def _handler(
     frames: object | None = None,
     audio: object | None = None,
     transcriber: object | None = None,
+    captions: object | None = None,
+    clips: object | None = None,
+    watcher: object | None = None,
+    max_clip_s: float = 30.0,
     observer: object | None = None,
     limiter: object | None = None,
+    facts: MediaFacts | None = None,
 ) -> VideoHandler:
+    """A handler over a real file.
+
+    `facts` substitutes a stub probe for the real one. Only the precedence
+    tests use it, and only because building a container with both a bitmap and
+    a text subtitle track for every case would test ffmpeg's muxer rather than
+    this handler's rule. The container itself stays real, so frame extraction
+    is unaffected.
+    """
     return VideoHandler(
         source=_PathSource(path),
-        probe=FfprobeStreams(),
+        probe=_StubProbe(facts) if facts is not None else FfprobeStreams(),
         frames=frames or FfmpegFrames(),  # type: ignore[arg-type]  # structural stub in tests
         vision=vision,  # type: ignore[arg-type]  # structural stub in tests
         audio=audio,  # type: ignore[arg-type]  # structural stub in tests
         transcriber=transcriber,  # type: ignore[arg-type]  # structural stub in tests
+        captions=captions,  # type: ignore[arg-type]  # structural stub in tests
+        clips=clips,  # type: ignore[arg-type]  # structural stub in tests
+        watcher=watcher,  # type: ignore[arg-type]  # structural stub in tests
+        max_clip_s=max_clip_s,
         sample_interval_s=interval,
         observer=observer,  # type: ignore[arg-type]  # structural stub in tests
         limiter=limiter,  # type: ignore[arg-type]  # structural stub in tests
     )
 
 
-def _facts(duration_s: float = 5.0, *, frame_rate: float | None = 10.0) -> MediaFacts:
+def _facts(
+    duration_s: float = 5.0,
+    *,
+    frame_rate: float | None = 10.0,
+    subtitles: tuple[StreamInfo, ...] = (),
+) -> MediaFacts:
     return MediaFacts(
         duration_s=duration_s,
         container="mov,mp4",
@@ -278,7 +308,22 @@ def _facts(duration_s: float = 5.0, *, frame_rate: float | None = 10.0) -> Media
                 sample_rate=None,
                 channels=None,
             ),
+            *subtitles,
         ),
+    )
+
+
+def _subtitle(codec: str, *, is_text: bool, language: str | None = "eng") -> StreamInfo:
+    return StreamInfo(
+        kind="subtitle",
+        codec=codec,
+        width=None,
+        height=None,
+        frame_rate=None,
+        sample_rate=None,
+        channels=None,
+        language=language,
+        is_text=is_text,
     )
 
 
@@ -295,6 +340,32 @@ def _stub_handler(facts: MediaFacts, **kwargs: object) -> VideoHandler:
 
 
 # --- the card -----------------------------------------------------------------
+
+
+async def test_the_card_reports_caption_tracks() -> None:
+    """An agent not told captions exist pays a vision model to learn what one
+    ffmpeg call would have told it for free — which is exactly what happened
+    on the reference file before this key existed.
+
+    Counts rather than a bare flag, and text tracks counted separately from
+    subtitle tracks, because the two answer different questions: whether
+    words are present at all, and whether reaching them is cheap.
+    """
+    facts = _facts(
+        subtitles=(_subtitle("dvd_subtitle", is_text=False), _subtitle("mov_text", is_text=True))
+    )
+    card = await _stub_handler(facts).describe(_ref())
+    assert card.facts["subtitle_streams"] == 2
+    assert card.facts["text_caption_tracks"] == 1
+
+
+async def test_the_card_omits_caption_keys_when_there_are_none() -> None:
+    """`video_codec` is omitted rather than empty when a probe cannot report
+    it. Captions follow the same rule: an absent key admits there is nothing,
+    where a zero would read as a measurement someone took."""
+    card = await _stub_handler(_facts()).describe(_ref())
+    assert "subtitle_streams" not in card.facts
+    assert "text_caption_tracks" not in card.facts
 
 
 def test_the_ports_are_satisfied_by_the_real_adapters() -> None:
@@ -1127,3 +1198,334 @@ class TestVideoHandlerCompliance(MediaHandlerCompliance):
     @pytest.fixture
     def content(self, sample_video: str) -> bytes:
         return Path(sample_video).read_bytes()
+
+
+def test_a_caption_is_rendered_as_a_caption_not_as_speech() -> None:
+    """A caption is authored text: condensed for reading speed, sometimes
+    translated, and used for sound nobody spoke. Marking it as speech asserts
+    someone said words they did not say — the same defect SPEECH_MARKER
+    already prevents between pictures and sentences."""
+    captioned = TranscriptCue(
+        span=TimeSpan(0.0, 2.0),
+        text="[music playing]",
+        speaker=None,
+        confidence=None,
+        source=CueSource.CAPTIONED,
+    )
+    line = _spoken(captioned)
+    assert line == f"{CAPTION_MARKER} [music playing]"
+    assert SPEECH_MARKER not in line
+
+
+def test_a_heard_cue_is_still_rendered_as_speech() -> None:
+    heard = TranscriptCue(span=TimeSpan(0.0, 2.0), text="hello", speaker=None, confidence=None)
+    assert _spoken(heard) == f"{SPEECH_MARKER} hello"
+
+
+def test_an_empty_cue_names_neither_producer_falsely() -> None:
+    """Both a transcriber and a caption track can legally produce an empty
+    string, and the placeholder must not claim a transcriber ran when a
+    caption file was what was read."""
+    empty = TranscriptCue(
+        span=TimeSpan(0.0, 1.0),
+        text="   ",
+        speaker=None,
+        confidence=None,
+        source=CueSource.CAPTIONED,
+    )
+    assert _spoken(empty) == f"{CAPTION_MARKER} (no text was produced for this cue)"
+
+
+# --- precedence: captions before ASR -----------------------------------------
+
+
+def _caption_cues() -> tuple[TranscriptCue, ...]:
+    return (
+        TranscriptCue(span=TimeSpan(0.5, 2.0), text="written words", speaker=None, confidence=None),
+    )
+
+
+def _captioned_facts() -> MediaFacts:
+    return _facts(
+        subtitles=(_subtitle("dvd_subtitle", is_text=False), _subtitle("mov_text", is_text=True))
+    )
+
+
+async def test_captions_are_preferred_to_transcription(sample_video: str) -> None:
+    """Captions cost one ffmpeg call against a model's whole run, arrive
+    already aligned to this timeline, and were written by someone who could
+    hear the audio. Paying for ASR when they exist is waste."""
+    captions = FakeCaptions(cues=_caption_cues())
+    rendered = await _handler(
+        sample_video,
+        vision=FakeVision(),
+        audio=FfmpegAudio(),
+        transcriber=FakeTranscriber(duration_s=5.0),
+        captions=captions,
+        facts=_captioned_facts(),
+    ).represent(_ref(), Budget(max_chars=None))
+    assert f"{CAPTION_MARKER} written words" in rendered.text
+    assert SPEECH_MARKER not in rendered.text
+    assert captions.calls, "the caption track was never read"
+
+
+async def test_the_text_track_is_chosen_not_the_first_one(sample_video: str) -> None:
+    """The reference file's readable track is subtitle 1; subtitle 0 is
+    bitmaps that extract to nothing. Asking for "the first track" finds no
+    words in a file that is full of them."""
+    captions = FakeCaptions(cues=_caption_cues())
+    await _handler(
+        sample_video,
+        vision=FakeVision(),
+        captions=captions,
+        facts=_captioned_facts(),
+    ).represent(_ref(), Budget(max_chars=None))
+    assert captions.calls[0][1] == 1
+
+
+async def test_asr_runs_when_there_is_no_caption_track(sample_video: str) -> None:
+    rendered = await _handler(
+        sample_video,
+        vision=FakeVision(),
+        audio=FfmpegAudio(),
+        transcriber=FakeTranscriber(duration_s=5.0),
+        captions=FakeCaptions(cues=None),
+    ).represent(_ref(), Budget(max_chars=None))
+    assert SPEECH_MARKER in rendered.text
+    assert CAPTION_MARKER not in rendered.text
+
+
+async def test_a_caption_track_that_will_not_extract_falls_through_to_asr(
+    sample_video: str,
+) -> None:
+    """A declared track that yields nothing is exactly the case ASR exists
+    for. Reporting "no words" about a file that plainly has some would be
+    worse than paying for the model."""
+    rendered = await _handler(
+        sample_video,
+        vision=FakeVision(),
+        audio=FfmpegAudio(),
+        transcriber=FakeTranscriber(duration_s=5.0),
+        captions=FakeCaptions(cues=None),
+        facts=_captioned_facts(),
+    ).represent(_ref(), Budget(max_chars=None))
+    assert SPEECH_MARKER in rendered.text
+
+
+async def test_a_raising_caption_extractor_degrades_rather_than_failing(
+    sample_video: str,
+) -> None:
+    """`extract` is specified never to raise, but it is injected, and this
+    handler's contract is that it never raises about its input."""
+    rendered = await _handler(
+        sample_video,
+        vision=FakeVision(),
+        audio=FfmpegAudio(),
+        transcriber=FakeTranscriber(duration_s=5.0),
+        captions=RaisingCaptions(),
+        facts=_captioned_facts(),
+    ).represent(_ref(), Budget(max_chars=None))
+    assert rendered.text.strip()
+    assert any(d.what == "caption extraction failed" for d in rendered.degradations)
+    assert SPEECH_MARKER in rendered.text
+
+
+async def test_unread_captions_are_reported(sample_video: str) -> None:
+    """A file whose captions were ignored and whose words were reached by
+    model instead is a worse answer produced at higher cost. Silence about
+    that is how it stays that way."""
+    rendered = await _handler(
+        sample_video,
+        vision=FakeVision(),
+        audio=FfmpegAudio(),
+        transcriber=FakeTranscriber(duration_s=5.0),
+        captions=None,
+        facts=_captioned_facts(),
+    ).represent(_ref(), Budget(max_chars=None))
+    assert any(d.what == "captions not read" for d in rendered.degradations)
+
+
+async def test_no_caption_complaint_when_the_file_has_none(sample_video: str) -> None:
+    """A file with no words is a fact about the file, not a degradation."""
+    rendered = await _handler(sample_video, vision=FakeVision()).represent(
+        _ref(), Budget(max_chars=None)
+    )
+    assert not any("caption" in d.what for d in rendered.degradations)
+
+
+# --- watch_segment ------------------------------------------------------------
+
+
+class _StubClips:
+    """A clip extractor that hands back bytes and records what was asked."""
+
+    def __init__(self, data: bytes | None = b"\x00\x00\x00\x18ftypmp42moof") -> None:
+        self._data = data
+        self.calls: list[tuple[float, float]] = []
+
+    async def clip(self, path: str, start_s: float, end_s: float) -> bytes | None:
+        self.calls.append((start_s, end_s))
+        return self._data
+
+
+class _RaisingClips:
+    async def clip(self, path: str, start_s: float, end_s: float) -> bytes | None:
+        raise RuntimeError("ffmpeg exploded")
+
+
+class _RaisingWatcher:
+    model_id = "raising-clip@1"
+
+    async def watch(self, clip: bytes, mime: str, prompt: str) -> str:
+        raise InfrastructureError("the model returned an empty completion")
+
+
+async def test_watch_segment_describes_a_range_as_one_span(sample_video: str) -> None:
+    """One LocatorSegment over the whole span, never one per second: this is a
+    joint description of a stretch of time, and splitting it would invent
+    precision the model never had."""
+    handler = _handler(
+        sample_video, vision=FakeVision(), clips=_StubClips(), watcher=FakeClipModel()
+    )
+    result = await handler.invoke(
+        _ref(), "watch_segment", WatchSegmentParams(start_s=1.0, end_s=3.0, prompt="what?")
+    )
+    assert result.degraded is False
+    assert result.locator == TimeSpan(1.0, 3.0)
+    assert "clip of" in result.content.text
+
+
+async def test_the_locator_is_the_range_requested(sample_video: str) -> None:
+    """`-ss` seeks by keyframe, so ffmpeg may hand back a clip starting
+    slightly early. The request is a fact about the question asked; the
+    delivered range is an approximation that would take another probe to
+    learn, and reporting it as measured is the defect this project keeps
+    finding."""
+    clips = _StubClips()
+    handler = _handler(sample_video, vision=FakeVision(), clips=clips, watcher=FakeClipModel())
+    result = await handler.invoke(
+        _ref(), "watch_segment", WatchSegmentParams(start_s=2.5, end_s=4.5)
+    )
+    assert result.locator == TimeSpan(2.5, 4.5)
+    assert clips.calls == [(2.5, 4.5)]
+
+
+async def test_a_segment_over_the_cap_is_refused_with_its_cost(sample_video: str) -> None:
+    """Refused, not truncated. Quietly watching the first 30 seconds of a
+    ten-minute range and reporting success would be a claim about time the
+    model never saw, and the caller could not tell.
+
+    The message must not extrapolate: 600s was MEASURED at 88,041 tokens,
+    where multiplying the sub-40s rate would have predicted 1,308,000. A
+    refusal quoting a fabricated cost teaches a caller something false about
+    the system they are trying to use."""
+    watcher = FakeClipModel()
+    clips = _StubClips()
+    handler = _handler(sample_video, vision=FakeVision(), clips=clips, watcher=watcher)
+    result = await handler.invoke(
+        _ref(), "watch_segment", WatchSegmentParams(start_s=0.0, end_s=600.0)
+    )
+    assert result.degraded is True
+    assert "30" in result.content.text
+    assert "88,033" in result.content.text  # the plateau, not an extrapolation
+    assert watcher.calls == 0, "the model was called despite the cap"
+    assert clips.calls == [], "a clip was cut despite the cap"
+
+
+async def test_the_cap_is_a_constructor_argument(sample_video: str) -> None:
+    handler = _handler(
+        sample_video,
+        vision=FakeVision(),
+        clips=_StubClips(),
+        watcher=FakeClipModel(),
+        max_clip_s=5.0,
+    )
+    result = await handler.invoke(
+        _ref(), "watch_segment", WatchSegmentParams(start_s=0.0, end_s=10.0)
+    )
+    assert result.degraded is True
+    assert "5s" in result.content.text
+
+
+async def test_a_backwards_segment_is_refused(sample_video: str) -> None:
+    handler = _handler(
+        sample_video, vision=FakeVision(), clips=_StubClips(), watcher=FakeClipModel()
+    )
+    result = await handler.invoke(
+        _ref(), "watch_segment", WatchSegmentParams(start_s=5.0, end_s=2.0)
+    )
+    assert result.degraded is True
+    assert "must end after it starts" in result.content.text
+
+
+async def test_a_range_with_no_video_degrades(sample_video: str) -> None:
+    handler = _handler(
+        sample_video, vision=FakeVision(), clips=_StubClips(data=None), watcher=FakeClipModel()
+    )
+    result = await handler.invoke(
+        _ref(), "watch_segment", WatchSegmentParams(start_s=0.0, end_s=2.0)
+    )
+    assert result.degraded is True
+    assert "past the end" in result.content.text
+
+
+async def test_a_raising_extractor_degrades_rather_than_failing(sample_video: str) -> None:
+    handler = _handler(
+        sample_video, vision=FakeVision(), clips=_RaisingClips(), watcher=FakeClipModel()
+    )
+    result = await handler.invoke(
+        _ref(), "watch_segment", WatchSegmentParams(start_s=0.0, end_s=2.0)
+    )
+    assert result.degraded is True
+    assert "could not be cut" in result.content.text
+
+
+async def test_a_refusing_model_degrades_rather_than_failing(sample_video: str) -> None:
+    handler = _handler(
+        sample_video, vision=FakeVision(), clips=_StubClips(), watcher=_RaisingWatcher()
+    )
+    result = await handler.invoke(
+        _ref(), "watch_segment", WatchSegmentParams(start_s=0.0, end_s=2.0)
+    )
+    assert result.degraded is True
+    assert "could not watch" in result.content.text
+
+
+async def test_watch_segment_is_absent_without_both_ports(sample_video: str) -> None:
+    """A server that describes stills need not accept clips — ours did not
+    until 2026-08-15 — so the affordance must disappear rather than fail."""
+    names = lambda h: {a.name for a in h.affordances()}  # noqa: E731
+    assert "watch_segment" not in names(_handler(sample_video, vision=FakeVision()))
+    assert "watch_segment" not in names(
+        _handler(sample_video, vision=FakeVision(), clips=_StubClips())
+    )
+    assert "watch_segment" not in names(
+        _handler(sample_video, vision=FakeVision(), watcher=FakeClipModel())
+    )
+    assert "watch_segment" in names(
+        _handler(sample_video, vision=FakeVision(), clips=_StubClips(), watcher=FakeClipModel())
+    )
+
+
+async def test_invoking_an_unoffered_watch_segment_raises(sample_video: str) -> None:
+    with pytest.raises(UnknownAffordanceError):
+        await _handler(sample_video, vision=FakeVision()).invoke(
+            _ref(), "watch_segment", WatchSegmentParams()
+        )
+
+
+def test_a_short_clip_cost_is_quoted_as_an_estimate() -> None:
+    """Below the linear limit the measurements are a straight line — 20s=42,487,
+    30s=63,200, 40s=83,887 — so a figure here is a real estimate."""
+    assert _clip_cost(30.0) == "about 63,000 prompt tokens"
+
+
+def test_a_long_clip_cost_is_not_extrapolated() -> None:
+    """Above ~40s the line stops. 60s, 300s and 1200s all measured at exactly
+    88,033, and 120s at 218,435. Multiplying the rate would have predicted
+    1,308,000 for a 600s clip whose real cost is 88,041 — a number this code
+    used to print."""
+    message = _clip_cost(600.0)
+    assert "88,033" in message
+    assert "1,260,000" not in message
+    assert "at least" in message

@@ -52,6 +52,7 @@ from readeverything.domain.observation import (
 )
 from readeverything.domain.rendition import (
     Budget,
+    CueSource,
     Degradation,
     ImageContent,
     Rendered,
@@ -61,6 +62,9 @@ from readeverything.domain.rendition import (
 )
 from readeverything.domain.timeline import clamp_cues_to_duration, tile
 from readeverything.ports.audio import AudioExtractor
+from readeverything.ports.captions import CaptionExtractor
+from readeverything.ports.clip_source import ClipExtractor
+from readeverything.ports.clips import ClipModel
 from readeverything.ports.frames import FrameExtractor
 from readeverything.ports.limits import Limiter
 from readeverything.ports.observation import Observer, emit
@@ -95,11 +99,24 @@ MOMENT_SEPARATOR = "\n"
 #: would attribute speech to a picture.
 SPEECH_MARKER = "(speech)"
 
+#: What marks an authored caption, as `SPEECH_MARKER` marks heard speech. A
+#: caption track is written, not heard: condensed for reading speed, sometimes
+#: translated, and used for sound nobody spoke. Rendering one as speech would
+#: assert that someone said words they did not say.
+CAPTION_MARKER = "(caption)"
+
 #: The mimetype handed to the transcriber. `AudioExtractor.extract` is
 #: specified to return mono 16kHz WAV bytes whatever the container was, so this
 #: describes what is actually passed rather than what was on disk. The same
 #: constant, for the same reason, as `audio.EXTRACTED_MIME`.
 EXTRACTED_MIME = "audio/wav"
+
+#: The mimetype handed to the clip model. `ClipExtractor.clip` is specified to
+#: return encoded video bytes whatever the source container was, and the ffmpeg
+#: adapter muxes mp4 — so this describes what is actually passed rather than
+#: what was on disk. Declared here rather than imported from the adapter, for
+#: the same reason `EXTRACTED_MIME` is: no handler imports an adapter.
+CLIP_MIME = "video/mp4"
 
 _FRAME_PROMPT = "Describe what is visible in this video frame, in one or two sentences."
 
@@ -118,6 +135,69 @@ _UNEXPECTED_MOMENT = ("(this moment could not be read)", "failed")
 class FrameAtParams(BaseModel):
     seconds: float = Field(
         default=0.0, ge=0.0, description="Point in the timeline to extract a frame from."
+    )
+
+
+#: Prompt tokens per second of clip, VALID ONLY BELOW ~40 SECONDS.
+#:
+#: Measured against llama.cpp b10438 serving qwen3.8-27b-mtp on 2026-08-15:
+#: 20s=42,487, 25s=52,850, 30s=63,200, 35s=73,550, 40s=83,887 — a straight line
+#: at ~2,100/s. Re-encoding the source to a lower frame rate changes nothing;
+#: the server resamples by timestamp, so a caller cannot turn the rate down.
+#:
+#: ABOVE ~40s THE LINE STOPS. 60s, 300s and 1200s all cost exactly 88,033,
+#: which is a frame cap (~80 frames) rather than a rate — it is how the model
+#: claims to handle hour-scale video. 120s costs 218,435 and fits neither
+#: pattern; that outlier is unexplained and is the reason nothing here
+#: extrapolates past the measured range.
+#:
+#: An earlier version of this constant was used to predict 1,308,000 tokens for
+#: a 600s clip. The real figure is 88,041. Do not extrapolate this number.
+TOKENS_PER_CLIP_SECOND = 2100
+
+#: Above this, a clip stops being linear and the measurements stop being a
+#: guide. Quoting a cost past here would be inventing one.
+LINEAR_CLIP_LIMIT_S = 40.0
+
+#: What a clip costs once past `LINEAR_CLIP_LIMIT_S` — flat, whatever the
+#: duration. Above every context window this project has met, which is why a
+#: long clip is refused rather than merely expensive.
+PLATEAU_CLIP_TOKENS = 88_033
+
+#: The default ceiling on one `watch_segment`.
+#:
+#: NOT a round number chosen for taste: 30s measured at 63,200 prompt tokens
+#: against the reference server's `n_ctx` of 65,536, and 35s measured at 73,550
+#: and was refused by the server. The true limit sits between, and 30s is the
+#: largest tested value that fits.
+#:
+#: THE MARGIN IS THIN — about 2,300 tokens, near a second of video — and the
+#: prompt shares it. A caller passing a long custom prompt can push a legal
+#: clip over the server's window; the handler degrades rather than raising when
+#: that happens, but the answer is lost. A caller on a server with a larger
+#: context should raise `max_clip_s`, and one on a smaller context must lower
+#: it: this default describes one measured configuration, not a law.
+MAX_CLIP_SECONDS = 30.0
+
+_WATCH_PROMPT = "Describe what happens in this video segment, including any motion or change."
+
+
+class WatchSegmentParams(BaseModel):
+    start_s: float = Field(default=0.0, ge=0.0, description="Start of the range to watch.")
+    end_s: float = Field(default=10.0, gt=0.0, description="End of the range to watch.")
+    prompt: str = Field(
+        default=_WATCH_PROMPT, description="What to ask the model about the segment."
+    )
+
+
+class ReadTranscriptParams(BaseModel):
+    start_s: float = Field(default=0.0, ge=0.0, description="Start of the window to read.")
+    end_s: float | None = Field(
+        default=None,
+        description=(
+            "End of the window to read. Omit to read to the end of the file — cheap, "
+            "since no model is involved, but a long lecture is thousands of words."
+        ),
     )
 
 
@@ -167,6 +247,10 @@ class VideoHandler:
         vision: VisionModel | None = None,
         audio: AudioExtractor | None = None,
         transcriber: Transcriber | None = None,
+        captions: CaptionExtractor | None = None,
+        clips: ClipExtractor | None = None,
+        watcher: ClipModel | None = None,
+        max_clip_s: float = MAX_CLIP_SECONDS,
         sample_interval_s: float = DEFAULT_SAMPLE_INTERVAL_S,
         observer: Observer | None = None,
         limiter: Limiter | None = None,
@@ -179,6 +263,10 @@ class VideoHandler:
         self._vision = vision
         self._audio = audio
         self._transcriber = transcriber
+        self._captions = captions
+        self._clips = clips
+        self._watcher = watcher
+        self._max_clip_s = max_clip_s
         self._interval_s = sample_interval_s
         self._observer = observer
         self._limiter = limiter
@@ -207,12 +295,44 @@ class VideoHandler:
         affordances: list[Affordance] = [
             Affordance(
                 name="frame_at",
-                description="Extract one video frame, as a PNG image, at a point in time.",
+                description=(
+                    "Extract one video frame at a point in time, as raw PNG image bytes. "
+                    "Use this only when you want the image ITSELF. To learn what is in a "
+                    "frame, call describe_frame instead — it extracts the frame for you, "
+                    "and calling both decodes the same frame twice."
+                ),
                 params=FrameAtParams,
                 requires=frozenset({Capability.FFMPEG}),
                 level=DetailLevel.SEGMENT,
             )
         ]
+        if self._captions is not None or self._transcriber is not None:
+            # Offered whenever an extractor is wired, without probing for a
+            # track first: `affordances()` is synchronous and cheap by
+            # contract, and reading the container to decide would make listing
+            # a file's affordances cost an ffmpeg call. A file with no track
+            # answers by saying so, which is the same shape every other
+            # affordance uses for "nothing there".
+            #
+            # This is the affordance whose absence made the whole caption path
+            # invisible to an agent: `represent()` had the words, and an agent
+            # holding inspect_path/invoke_affordance had no way to reach
+            # `represent()`. The card said "1 readable caption track" and then
+            # offered nothing but pixels.
+            affordances.append(
+                Affordance(
+                    name="read_transcript",
+                    description=(
+                        "Read what is said during a window of the timeline — from the "
+                        "container's own caption track when it has one, otherwise by "
+                        "transcribing its audio. Almost always the cheapest way to learn "
+                        "what a video is about; try this before describing frames."
+                    ),
+                    params=ReadTranscriptParams,
+                    requires=frozenset({Capability.FFMPEG}),
+                    level=DetailLevel.SEGMENT,
+                )
+            )
         if self._vision is not None:
             affordances.append(
                 Affordance(
@@ -226,6 +346,22 @@ class VideoHandler:
                     level=DetailLevel.DEEP,
                 )
             )
+        if self._clips is not None and self._watcher is not None:
+            affordances.append(
+                Affordance(
+                    name="watch_segment",
+                    description=(
+                        f"Watch a short range of the video — motion included, not one "
+                        f"still. Use this when the question is about what HAPPENS in a "
+                        f"stretch of time rather than what is visible at a moment. "
+                        f"Expensive and hard-capped at {self._max_clip_s:g}s: read the "
+                        f"transcript first to find the range worth watching."
+                    ),
+                    params=WatchSegmentParams,
+                    requires=frozenset({Capability.FFMPEG, Capability.VISION}),
+                    level=DetailLevel.DEEP,
+                )
+            )
         return tuple(affordances)
 
     async def invoke(self, ref: SourceRef, name: str, params: BaseModel) -> Rendition:
@@ -234,14 +370,166 @@ class VideoHandler:
                 if not isinstance(params, FrameAtParams):
                     raise TypeError(f"expected FrameAtParams, got {type(params).__name__}")
                 return await self._frame_at(ref, params.seconds)
+            case "read_transcript":
+                if self._captions is None and self._transcriber is None:
+                    raise UnknownAffordanceError(name, (a.name for a in self.affordances()))
+                if not isinstance(params, ReadTranscriptParams):
+                    raise TypeError(f"expected ReadTranscriptParams, got {type(params).__name__}")
+                return await self._read_transcript(ref, params.start_s, params.end_s)
             case "describe_frame":
                 if self._vision is None:
                     raise UnknownAffordanceError(name, (a.name for a in self.affordances()))
                 if not isinstance(params, DescribeFrameParams):
                     raise TypeError(f"expected DescribeFrameParams, got {type(params).__name__}")
                 return await self._describe_frame(ref, params.seconds, params.prompt)
+            case "watch_segment":
+                if self._clips is None or self._watcher is None:
+                    raise UnknownAffordanceError(name, (a.name for a in self.affordances()))
+                if not isinstance(params, WatchSegmentParams):
+                    raise TypeError(f"expected WatchSegmentParams, got {type(params).__name__}")
+                return await self._watch_segment(ref, params.start_s, params.end_s, params.prompt)
             case _:
                 raise UnknownAffordanceError(name, (a.name for a in self.affordances()))
+
+    async def _read_transcript(
+        self, ref: SourceRef, start_s: float, end_s: float | None
+    ) -> Rendition:
+        """What is said in a window, from the container's own caption track.
+
+        Located by the window actually covered rather than the window asked
+        for: a caller asking for 0-600s of a file whose captions stop at 300s
+        should get a locator that says 300, not one asserting three hundred
+        seconds of silence nobody looked at.
+        """
+        if end_s is not None and end_s <= start_s:
+            return self._degraded_read(
+                ref, f"the requested window {_timestamp(start_s)}-{_timestamp(end_s)} is empty"
+            )
+        try:
+            path = await self._source.local_path(ref.uri)
+        except Exception:
+            return self._degraded_read(ref, "this video has no local path to read words from")
+        try:
+            facts = await self._probe.probe(path)
+        except Exception as exc:
+            return self._degraded_read(ref, f"the video could not be probed ({exc})")
+        # The SAME precedence `represent()` uses, deliberately: the container's
+        # captions when it has them, ASR when it does not. An earlier version
+        # read captions only, and on a caption-less file it told an agent
+        # holding a working transcriber that there were no words — the second
+        # time in this feature that words existed and nothing could reach them.
+        cues, _ = await self._cues(path, facts)
+        if not cues:
+            return self._degraded_read(
+                ref,
+                "no words could be read from this video: it carries no readable caption "
+                "track, and none could be transcribed from its audio",
+            )
+        limit = facts.duration_s if end_s is None else end_s
+        window = tuple(c for c in cues if c.span.start_s < limit and c.span.end_s > start_s)
+        if not window:
+            return self._degraded_read(
+                ref,
+                f"nothing is said between {_timestamp(start_s)} and {_timestamp(limit)}",
+            )
+        lines = [f"[{_timestamp(c.span.start_s)}] {' '.join(c.text.split())}" for c in window]
+        return Rendition(
+            locator=TimeSpan(
+                start_s=min(c.span.start_s for c in window),
+                end_s=max(c.span.end_s for c in window),
+            ),
+            content=TextContent("\n".join(lines)),
+        )
+
+    async def _watch_segment(
+        self, ref: SourceRef, start_s: float, end_s: float, prompt: str
+    ) -> Rendition:
+        """What happens across a bounded range, motion included.
+
+        The locator is the range REQUESTED, not the range delivered. `-ss`
+        seeks by keyframe, so ffmpeg may hand back a clip starting slightly
+        early; the request is a fact about the question asked, while the
+        delivered range is an approximation of it that would take another
+        probe to learn. Reporting the approximation as though it were measured
+        is the defect this project keeps finding.
+
+        One `LocatorSegment` over the whole span, never one per second: this is
+        a joint description of a stretch of time, and splitting it would invent
+        precision the model never had.
+        """
+        if self._clips is None or self._watcher is None:
+            raise UnknownAffordanceError("watch_segment", (a.name for a in self.affordances()))
+        span_s = end_s - start_s
+        if span_s <= 0:
+            return self._refused_watch(
+                ref,
+                f"a segment must end after it starts; got {_timestamp(start_s)} "
+                f"to {_timestamp(end_s)}",
+            )
+        if span_s > self._max_clip_s:
+            # REFUSED, NOT TRUNCATED. Quietly watching the first 30 seconds of
+            # a ten-minute range and reporting success would be a claim about
+            # time the model never saw, and the caller would have no way to
+            # tell.
+            return self._refused_watch(
+                ref,
+                f"a {span_s:g}s segment is past this handler's {self._max_clip_s:g}s cap "
+                f"({_clip_cost(span_s)}, against a context window measured at 65,536 "
+                f"tokens on the reference server). Ask for a narrower range, or read the "
+                f"transcript to find the part worth watching.",
+            )
+        try:
+            path = await self._source.local_path(ref.uri)
+        except Exception:
+            return self._refused_watch(ref, "this video has no local path to cut a clip from")
+        async with self._limit(Capability.VISION):
+            try:
+                data = await self._clips.clip(path, start_s, end_s)
+            except Exception as exc:
+                return self._refused_watch(ref, f"the segment could not be cut ({exc})")
+            if data is None:
+                return self._refused_watch(
+                    ref,
+                    f"no video could be cut from {_timestamp(start_s)} to "
+                    f"{_timestamp(end_s)}; the range may lie past the end of the file",
+                )
+            try:
+                text = await self._watcher.watch(data, CLIP_MIME, prompt)
+            except Exception as exc:
+                return self._refused_watch(ref, f"the model could not watch the segment ({exc})")
+        return Rendition(
+            locator=TimeSpan(start_s=start_s, end_s=end_s),
+            content=TextContent(text),
+        )
+
+    def _refused_watch(self, ref: SourceRef, detail: str) -> Rendition:
+        """What every unanswerable `watch_segment` returns.
+
+        Located by `ByteRange` over the whole file rather than by the requested
+        `TimeSpan`, for the reason `_degraded_frame` and `_degraded_read` both
+        give: a `TimeSpan` would assert a stretch of timeline this call never
+        established the file has — which is exactly wrong when the refusal is
+        "that range is past the end".
+        """
+        return Rendition(
+            locator=ByteRange(0, max(1, ref.size_bytes)),
+            content=TextContent(detail),
+            degraded=True,
+        )
+
+    def _degraded_read(self, ref: SourceRef, detail: str) -> Rendition:
+        """What every unanswerable `read_transcript` returns.
+
+        Located by `ByteRange` over the whole file rather than by the
+        requested `TimeSpan`, for the reason `_degraded_frame` and
+        `audio._degraded_span` both give: a `TimeSpan` would assert a stretch
+        of timeline this call never established the file has.
+        """
+        return Rendition(
+            locator=ByteRange(0, max(1, ref.size_bytes)),
+            content=TextContent(detail),
+            degraded=True,
+        )
 
     def _degraded_frame(self, ref: SourceRef, seconds: float, detail: str) -> Rendition:
         """What every un-decodable-frame request returns.
@@ -386,6 +674,22 @@ class VideoHandler:
                 card_facts["audio_sample_rate"] = audio.sample_rate
             if audio.channels is not None:
                 card_facts["audio_channels"] = audio.channels
+        if facts.subtitle_streams:
+            # Two counts rather than one flag. "Are there words in this file"
+            # and "is reaching them cheap" are different questions: a bitmap
+            # track needs OCR and a text track needs one ffmpeg call, and a
+            # reader choosing between the timeline and a vision model needs
+            # the second answer, not just the first. Omitted entirely when
+            # there are no subtitle streams, for the reason `video_codec` is
+            # omitted above — an absent key admits nothing is there, where a
+            # zero reads as a measurement.
+            card_facts["subtitle_streams"] = len(facts.subtitle_streams)
+            card_facts["text_caption_tracks"] = len(facts.text_subtitle_streams)
+            languages = sorted(
+                {s.language for s in facts.text_subtitle_streams if s.language is not None}
+            )
+            if languages:
+                card_facts["caption_languages"] = ", ".join(languages)
         return Card(
             ref=ref,
             kind=MediaKind.VIDEO,
@@ -571,6 +875,70 @@ class VideoHandler:
         handler's contract is that it never raises about its input, so the call
         is guarded rather than trusted.
         """
+        text_tracks = facts.text_subtitle_streams
+        if text_tracks and self._captions is not None:
+            captioned, degradations = await self._captioned_cues(path, facts)
+            if captioned:
+                return captioned, degradations
+            # A track that would not extract is exactly the case ASR exists
+            # for, so fall through rather than reporting an absence of words
+            # in a file that plainly has some. The caption path's degradations
+            # come WITH us: they explain why the expensive path is running,
+            # and dropping them here would make a silent fallback out of a
+            # reported one.
+            cues, asr_degradations = await self._transcribed_cues(path, facts)
+            return cues, (*degradations, *asr_degradations)
+        if text_tracks and self._captions is None:
+            cues, asr_degradations = await self._transcribed_cues(path, facts)
+            return cues, (
+                Degradation(
+                    what="captions not read",
+                    detail=(
+                        f"the container carries {len(text_tracks)} readable caption "
+                        "track(s) but no caption extractor is wired, so the words were "
+                        "reached the expensive way or not at all"
+                    ),
+                ),
+                *asr_degradations,
+            )
+        return await self._transcribed_cues(path, facts)
+
+    async def _captioned_cues(
+        self, path: str, facts: MediaFacts
+    ) -> tuple[tuple[TranscriptCue, ...], tuple[Degradation, ...]]:
+        """The container's own caption track, tiled onto this timeline.
+
+        WHICH TRACK is a decision, not a default. The reference file's
+        readable track is subtitle 1 and its subtitle 0 is bitmaps that
+        extract to nothing at all, so asking for "the first track" finds no
+        words in a file that is full of them. The first TEXT track is what is
+        wanted, and the index is counted over subtitle streams because that is
+        how ffmpeg's `-map 0:s:N` counts.
+        """
+        track = next((i for i, s in enumerate(facts.subtitle_streams) if s.is_text), 0)
+        try:
+            extracted = await self._captions.extract(path, track)  # type: ignore[union-attr]
+        except Exception as exc:
+            return (), (
+                Degradation(
+                    what="caption extraction failed",
+                    detail=(
+                        f"the caption track could not be read ({exc}); the timeline falls "
+                        "back to whatever else is configured"
+                    ),
+                ),
+            )
+        if not extracted:
+            return (), ()
+        cues, dropped = clamp_cues_to_duration(extracted, facts.duration_s)
+        if not cues:
+            return (), ()
+        return cues, _dropped_degradations(dropped, facts.duration_s, "caption track")
+
+    async def _transcribed_cues(
+        self, path: str, facts: MediaFacts
+    ) -> tuple[tuple[TranscriptCue, ...], tuple[Degradation, ...]]:
+        """What a transcriber heard, when there are no captions to read."""
         if self._transcriber is None:
             return (), ()
         if self._audio is None:
@@ -611,18 +979,9 @@ class VideoHandler:
                 ),
             )
         cues, dropped = clamp_cues_to_duration(transcribed, facts.duration_s)
-        degradations: list[Degradation] = []
-        if dropped:
-            degradations.append(
-                Degradation(
-                    what="cues outside the file",
-                    detail=(
-                        f"{dropped} cue(s) started at or after the probed duration of "
-                        f"{facts.duration_s:g}s and were dropped; the transcriber and the "
-                        "probe disagree about how long this file is"
-                    ),
-                )
-            )
+        degradations: list[Degradation] = list(
+            _dropped_degradations(dropped, facts.duration_s, "transcriber")
+        )
         if not cues:
             # A transcriber that ran and heard nothing is a different fact from
             # an absent transcriber, and the timeline says so rather than
@@ -914,16 +1273,66 @@ def _merge(
     return tuple(entries)
 
 
+def _clip_cost(span_s: float) -> str:
+    """What a clip of this length costs, phrased to the confidence available.
+
+    Below `LINEAR_CLIP_LIMIT_S` the measurements are a straight line and the
+    figure is a real estimate. Above it they are not: 60s, 300s and 1200s all
+    cost the same 88,033, and 120s costs 218,435 for reasons nobody here
+    understands. So past the linear range this says what was measured rather
+    than multiplying a rate — a refusal that quotes a fabricated number teaches
+    a caller something false about the system they are trying to use.
+    """
+    if span_s <= LINEAR_CLIP_LIMIT_S:
+        return f"about {int(span_s * TOKENS_PER_CLIP_SECOND):,} prompt tokens"
+    return (
+        f"at least {PLATEAU_CLIP_TOKENS:,} prompt tokens — past ~{LINEAR_CLIP_LIMIT_S:g}s "
+        f"cost stops tracking duration and does not fall below that"
+    )
+
+
+def _dropped_degradations(
+    dropped: int, duration_s: float, producer: str
+) -> tuple[Degradation, ...]:
+    """What to report when cues fell outside the probed duration.
+
+    Shared by the caption path and the transcription path because the fact is
+    the same one — someone's idea of where this file ends disagrees with the
+    probe's — and two copies would drift. `producer` names who disagreed, so a
+    reader knows whether to doubt a caption author or a model.
+    """
+    if not dropped:
+        return ()
+    return (
+        Degradation(
+            what="cues outside the file",
+            detail=(
+                f"{dropped} cue(s) started at or after the probed duration of "
+                f"{duration_s:g}s and were dropped; the {producer} and the probe disagree "
+                "about how long this file is"
+            ),
+        ),
+    )
+
+
 def _spoken(cue: TranscriptCue) -> str:
-    """One cue as a line of the merged timeline, marked as speech."""
+    """One cue as a line of the merged timeline, marked by where it came from.
+
+    Two markers rather than one because the difference is a difference in
+    evidence, not in formatting: a caption was written by a person who could
+    hear the audio and may have condensed, translated, or described a sound
+    nobody spoke, while a transcript cue is a model's report of what it heard.
+    A reader weighing a quotation needs to know which it has.
+    """
+    marker = SPEECH_MARKER if cue.source is CueSource.SAID else CAPTION_MARKER
     speaker = f"{cue.speaker} " if cue.speaker is not None else ""
     body = " ".join(cue.text.split())
     if not body:
-        # `TranscriptCue.text` is a `str`, so a transcriber emitting an empty
-        # one is a legal implementation. It must not reach an index as though
-        # something had been heard.
-        return f"{SPEECH_MARKER} (the transcriber returned no text for this cue)"
-    return f"{SPEECH_MARKER} {speaker}{body}"
+        # `TranscriptCue.text` is a `str`, so a producer emitting an empty one
+        # is a legal implementation. It must not reach an index as though
+        # something had been heard or read.
+        return f"{marker} (no text was produced for this cue)"
+    return f"{marker} {speaker}{body}"
 
 
 def _listed(times: list[float], limit: int = 10) -> str:

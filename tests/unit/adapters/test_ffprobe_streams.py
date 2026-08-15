@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from readeverything.adapters.ffprobe_streams import FfprobeStreams
+from readeverything.adapters.ffprobe_streams import FfprobeStreams, _parse_facts
 from readeverything.domain.errors import InfrastructureError
 from readeverything.ports.streams import StreamProbe
 
@@ -65,3 +65,56 @@ async def test_probing_does_not_decode(sample_video: str) -> None:
     start = time.monotonic()
     await FfprobeStreams().probe(sample_video)
     assert time.monotonic() - start < 5.0
+
+
+async def test_subtitle_streams_are_kept_and_classified() -> None:
+    """A card that is silent about captions sends an agent to a vision model
+    to learn what one ffmpeg call would have told it for free. Classification
+    matters as much as presence: a `mov_text` track extracts to characters in
+    a second, a `dvd_subtitle` track is pixels and needs OCR, and the
+    reference file carries one of each."""
+    facts = _parse_facts(
+        {
+            "format": {"duration": "10.0", "format_name": "mov,mp4"},
+            "streams": [
+                {"codec_type": "video", "codec_name": "h264", "r_frame_rate": "30/1"},
+                {"codec_type": "subtitle", "codec_name": "mov_text", "tags": {"language": "eng"}},
+                {"codec_type": "subtitle", "codec_name": "dvd_subtitle"},
+            ],
+        }
+    )
+    subtitles = facts.subtitle_streams
+    assert [s.codec for s in subtitles] == ["mov_text", "dvd_subtitle"]
+    assert subtitles[0].is_text is True
+    assert subtitles[0].language == "eng"
+    assert subtitles[1].is_text is False
+    assert subtitles[1].language is None
+    assert facts.text_subtitle_streams == (subtitles[0],)
+
+
+async def test_streams_that_are_neither_media_nor_subtitles_are_still_dropped() -> None:
+    """The reference file also carries a `bin_data` stream. Nothing can be
+    asked of it, so it has no business on a card."""
+    facts = _parse_facts(
+        {
+            "format": {"duration": "10.0", "format_name": "mov,mp4"},
+            "streams": [{"codec_type": "data", "codec_name": "bin_data"}],
+        }
+    )
+    assert facts.streams == ()
+
+
+async def test_video_and_audio_streams_are_never_marked_as_text() -> None:
+    """`is_text` is a fact about subtitle codecs. A video stream answering
+    True would make `text_subtitle_streams` a lie."""
+    facts = _parse_facts(
+        {
+            "format": {"duration": "10.0", "format_name": "mov,mp4"},
+            "streams": [
+                {"codec_type": "video", "codec_name": "h264", "r_frame_rate": "30/1"},
+                {"codec_type": "audio", "codec_name": "aac"},
+            ],
+        }
+    )
+    assert all(s.is_text is False for s in facts.streams)
+    assert facts.text_subtitle_streams == ()

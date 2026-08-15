@@ -32,7 +32,7 @@ import json
 from typing import Any
 
 from readeverything.domain.errors import InfrastructureError
-from readeverything.ports.streams import MediaFacts, StreamInfo
+from readeverything.ports.streams import TEXT_SUBTITLE_CODECS, MediaFacts, StreamInfo
 
 #: Small fixed bounds so ffprobe reads only enough of the header to answer,
 #: never the whole file.
@@ -55,16 +55,21 @@ def _parse_frame_rate(raw: str | None) -> float | None:
 
 def _parse_stream(raw: dict[str, Any]) -> StreamInfo | None:
     codec_type = raw.get("codec_type")
-    if codec_type not in ("video", "audio"):
+    if codec_type not in ("video", "audio", "subtitle"):
         return None
+    codec = str(raw.get("codec_name", ""))
+    tags = raw.get("tags")
+    language = tags.get("language") if isinstance(tags, dict) else None
     return StreamInfo(
         kind=codec_type,
-        codec=str(raw.get("codec_name", "")),
+        codec=codec,
         width=raw.get("width"),
         height=raw.get("height"),
         frame_rate=_parse_frame_rate(raw.get("r_frame_rate")),
         sample_rate=int(raw["sample_rate"]) if raw.get("sample_rate") is not None else None,
         channels=raw.get("channels"),
+        language=str(language) if language is not None else None,
+        is_text=codec_type == "subtitle" and codec in TEXT_SUBTITLE_CODECS,
     )
 
 

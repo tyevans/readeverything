@@ -102,6 +102,7 @@ def build_openai_vision_model(
     api_key: str = "not-needed",
     timeout_s: float = 120.0,
     max_tokens: int = 1024,
+    thinking: bool = False,
 ) -> LangChainVisionModel:
     """Build a vision model against an OpenAI-compatible endpoint.
 
@@ -111,6 +112,19 @@ def build_openai_vision_model(
 
     `model_id` is derived as `openai/{model}` so the capability fingerprint is
     provider-qualified rather than a bare family name.
+
+    `thinking` defaults to FALSE, which is a departure from the model's own
+    default and is the point. A reasoning model asked to describe a picture
+    spends its completion budget deciding how to describe the picture, and the
+    empty completions this adapter raises on are mostly that: measured, a
+    two-frame call with a 300-token budget produced 300 tokens of reasoning and
+    no answer. Describing an image is not a task that reasoning improves, so
+    the budget is better spent on the description.
+
+    The flag rides on `chat_template_kwargs`, which is how llama.cpp and vLLM
+    both pass template variables through; a server that does not recognise it
+    ignores it, so this is safe against endpoints that were never reasoning
+    models. Callers who want the reasoning channel back can ask for it.
     """
     from langchain_openai import ChatOpenAI
 
@@ -120,5 +134,6 @@ def build_openai_vision_model(
         api_key=api_key,  # type: ignore[arg-type]
         timeout=timeout_s,
         max_completion_tokens=max_tokens,
+        extra_body={"chat_template_kwargs": {"enable_thinking": thinking}},
     )
     return LangChainVisionModel(chat=chat, model_id=f"openai/{model}")

@@ -4,6 +4,7 @@ from readeverything.domain.locator_map import LocatorMap, LocatorSegment
 from readeverything.domain.locators import CharSpan, TimeSpan
 from readeverything.domain.rendition import (
     Budget,
+    CueSource,
     Degradation,
     Rendered,
     Rendition,
@@ -49,3 +50,22 @@ def test_a_budget_of_none_means_unbounded() -> None:
 def test_a_degradation_says_what_was_dropped() -> None:
     d = Degradation(what="frame_sampling", detail="reduced to 1 frame per 30s")
     assert "30s" in d.detail
+
+
+def test_a_cue_is_said_unless_it_says_otherwise() -> None:
+    """Every producer that predates this field is a transcriber. A default of
+    CAPTIONED would mislabel all of them, which is the exact failure the field
+    exists to prevent."""
+    cue = TranscriptCue(span=TimeSpan(0.0, 1.0), text="hi", speaker=None, confidence=None)
+    assert cue.source is CueSource.SAID
+
+
+def test_a_caption_can_say_it_was_written() -> None:
+    cue = TranscriptCue(
+        span=TimeSpan(0.0, 1.0),
+        text="[music playing]",
+        speaker=None,
+        confidence=None,
+        source=CueSource.CAPTIONED,
+    )
+    assert cue.source is CueSource.CAPTIONED

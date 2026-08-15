@@ -15,12 +15,23 @@ TESTS = ROOT / "tests"
 
 #: top-level third-party module -> the only files that may import it
 CONFINED: dict[str, set[str]] = {
-    "langchain_core": {"agent/tools.py", "adapters/vision_langchain.py"},
-    "langchain_openai": {"adapters/vision_langchain.py"},
+    # The clip adapter is a second home for both: it speaks llama.cpp's
+    # `input_video` dialect, which the vision adapter has no reason to know
+    # about, and it imports vision_langchain's flattening rather than copying
+    # it.
+    "langchain_core": {
+        "agent/tools.py",
+        "adapters/vision_langchain.py",
+        "adapters/clip_langchain.py",
+    },
+    "langchain_openai": {"adapters/vision_langchain.py", "adapters/clip_langchain.py"},
     "puremagic": {"adapters/detection.py"},
     "charset_normalizer": {"handlers/text.py"},
     "PIL": {"handlers/image.py"},
     "faster_whisper": {"adapters/whisper_transcriber.py"},
+    # The remote transcriber is the only place that speaks HTTP directly:
+    # every other network-touching adapter goes through langchain's client.
+    "httpx": {"adapters/remote_whisper_transcriber.py"},
     # pypdfium2 wraps Google's PDFium. Two homes: the probe adapter answers
     # cheap document facts, and the PDF handler extracts text — which is not a
     # probe's job, and no handler imports an adapter.
@@ -42,6 +53,10 @@ CONFINED: dict[str, set[str]] = {
         "adapters/ffmpeg_frames.py",
         # ffmpeg, same pattern, extracting the audio track.
         "adapters/ffmpeg_audio.py",
+        # ffmpeg, same pattern, converting a caption track to SRT on stdout.
+        "adapters/ffmpeg_captions.py",
+        # ffmpeg, same pattern, cutting a bounded range to stdout.
+        "adapters/ffmpeg_clip.py",
         # whisper's transcribe() is synchronous and CPU-bound; run in a
         # thread so it doesn't block the event loop.
         "adapters/whisper_transcriber.py",

@@ -28,6 +28,8 @@ from readeverything.handlers.text import TextHandler
 from readeverything.pipeline.perception import Perception
 from readeverything.pipeline.resolution import ResolutionMemo
 from readeverything.ports.artifacts import ArtifactStore
+from readeverything.ports.captions import CaptionExtractor
+from readeverything.ports.clips import ClipModel
 from readeverything.ports.handler import MediaHandler
 from readeverything.ports.limits import Limiter
 from readeverything.ports.observation import Observer
@@ -104,6 +106,8 @@ def _video_handler(
     source: SourceReader,
     vision: VisionModel | None,
     transcriber: Transcriber | None,
+    captions: CaptionExtractor | None,
+    watcher: ClipModel | None,
     observer: Observer | None,
     limiter: Limiter | None,
 ) -> list[MediaHandler]:
@@ -117,6 +121,8 @@ def _video_handler(
     an import here would otherwise reintroduce.
     """
     from readeverything.adapters.ffmpeg_audio import FfmpegAudio
+    from readeverything.adapters.ffmpeg_captions import FfmpegCaptions
+    from readeverything.adapters.ffmpeg_clip import FfmpegClip
     from readeverything.adapters.ffmpeg_frames import FfmpegFrames
     from readeverything.adapters.ffprobe_streams import FfprobeStreams
     from readeverything.handlers.video import VideoHandler
@@ -125,6 +131,15 @@ def _video_handler(
     # nothing to construct, and `VideoHandler` never touches it without a
     # transcriber to hand its bytes to — so a caller who configured ASR gets a
     # transcript on the video timeline without a second knob to find.
+    #
+    # Captions are wired the same way and for a stronger reason: unlike a
+    # vision model or a transcriber, reading them needs no configuration, no
+    # weights and no endpoint, and the handler only touches the extractor when
+    # the probe already said a readable track exists. A caller should not have
+    # to know to ask for the cheapest thing in the library — and before this
+    # was wired, an agent asked what a captioned lecture was about spent
+    # twelve vision calls and five minutes on a question the file answered in
+    # a second.
     return [
         VideoHandler(
             source=source,
@@ -133,6 +148,15 @@ def _video_handler(
             vision=vision,
             audio=FfmpegAudio(),
             transcriber=transcriber,
+            captions=FfmpegCaptions() if captions is None else captions,
+            # The extractor is wired unconditionally and the WATCHER is not,
+            # matching how vision is treated: cutting a clip costs an ffmpeg
+            # call a caller already pays for elsewhere, while watching one
+            # needs an endpoint that accepts video — which ours did not until
+            # 2026-08-15. Without a watcher the affordance simply does not
+            # appear, which is negotiation rather than degradation.
+            clips=FfmpegClip(),
+            watcher=watcher,
             observer=observer,
             limiter=limiter,
         )
@@ -174,6 +198,8 @@ async def build_perception(
     *,
     vision: VisionModel | None = None,
     transcriber: Transcriber | None = None,
+    captions: CaptionExtractor | None = None,
+    watcher: ClipModel | None = None,
     capabilities: CapabilitySet | None = None,
     artifacts: ArtifactStore | None = None,
     probe_binaries: bool = True,
@@ -219,7 +245,7 @@ async def build_perception(
         TextHandler(source=source, observer=observer),
         *_optional_image_handler(source, vision, observer),
         *_optional_pdf_handler(source, vision, observer),
-        *_video_handler(source, vision, transcriber, observer, limiter),
+        *_video_handler(source, vision, transcriber, captions, watcher, observer, limiter),
         *_audio_handler(source, transcriber, observer),
         # The fallback claims "*", so it must be last: the registry breaks a
         # rank tie by registration order, and a fallback registered first would

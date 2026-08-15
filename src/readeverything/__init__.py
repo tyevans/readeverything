@@ -18,14 +18,31 @@ if TYPE_CHECKING:
         InMemoryArtifactStore as InMemoryArtifactStore,
     )
     from readeverything.adapters.binary_probe import BinaryProbe as BinaryProbe
+    from readeverything.adapters.caching_words import (
+        CachingCaptionExtractor as CachingCaptionExtractor,
+    )
+    from readeverything.adapters.caching_words import (
+        CachingTranscriber as CachingTranscriber,
+    )
+    from readeverything.adapters.clip_langchain import (
+        LangChainClipModel as LangChainClipModel,
+    )
+    from readeverything.adapters.clip_langchain import (
+        build_openai_clip_model as build_openai_clip_model,
+    )
     from readeverything.adapters.detection import PuremagicDetector as PuremagicDetector
     from readeverything.adapters.ffmpeg_audio import FfmpegAudio as FfmpegAudio
+    from readeverything.adapters.ffmpeg_captions import FfmpegCaptions as FfmpegCaptions
+    from readeverything.adapters.ffmpeg_clip import FfmpegClip as FfmpegClip
     from readeverything.adapters.hashing import ContentHasher as ContentHasher
     from readeverything.adapters.hashing import StatMemo as StatMemo
     from readeverything.adapters.local_source import LocalFileSource as LocalFileSource
     from readeverything.adapters.model_probe import ModelProbe as ModelProbe
     from readeverything.adapters.pdfium_probe import PdfiumProbe as PdfiumProbe
     from readeverything.adapters.probing import discover as discover
+    from readeverything.adapters.remote_whisper_transcriber import (
+        RemoteWhisperTranscriber as RemoteWhisperTranscriber,
+    )
     from readeverything.adapters.semaphore_limiter import SemaphoreLimiter as SemaphoreLimiter
     from readeverything.adapters.vision_langchain import (
         LangChainVisionModel as LangChainVisionModel,
@@ -72,6 +89,7 @@ if TYPE_CHECKING:
     from readeverything.domain.observation import OperationProgressed as OperationProgressed
     from readeverything.domain.observation import OperationStarted as OperationStarted
     from readeverything.domain.rendition import Budget as Budget
+    from readeverything.domain.rendition import CueSource as CueSource
     from readeverything.domain.rendition import Degradation as Degradation
     from readeverything.domain.rendition import ImageContent as ImageContent
     from readeverything.domain.rendition import Rendered as Rendered
@@ -90,6 +108,9 @@ if TYPE_CHECKING:
     from readeverything.pipeline.resolution import ResolutionMemo as ResolutionMemo
     from readeverything.ports.artifacts import ArtifactStore as ArtifactStore
     from readeverything.ports.audio import AudioExtractor as AudioExtractor
+    from readeverything.ports.captions import CaptionExtractor as CaptionExtractor
+    from readeverything.ports.clip_source import ClipExtractor as ClipExtractor
+    from readeverything.ports.clips import ClipModel as ClipModel
     from readeverything.ports.detection import MimeDetector as MimeDetector
     from readeverything.ports.handler import MediaHandler as MediaHandler
     from readeverything.ports.hashing import ContentHashing as ContentHashing
@@ -151,7 +172,17 @@ _LAZY: dict[str, str] = {
     "FakeTranscriber": "readeverything.testing.fakes",
     "FakeVision": "readeverything.testing.fakes",
     "FakeVisionRefusing": "readeverything.testing.fakes",
+    "CachingCaptionExtractor": "readeverything.adapters.caching_words",
+    "CachingTranscriber": "readeverything.adapters.caching_words",
+    "CaptionExtractor": "readeverything.ports.captions",
+    "ClipExtractor": "readeverything.ports.clip_source",
+    "ClipModel": "readeverything.ports.clips",
+    "FfmpegClip": "readeverything.adapters.ffmpeg_clip",
+    "LangChainClipModel": "readeverything.adapters.clip_langchain",
+    "build_openai_clip_model": "readeverything.adapters.clip_langchain",
+    "CueSource": "readeverything.domain.rendition",
     "FfmpegAudio": "readeverything.adapters.ffmpeg_audio",
+    "FfmpegCaptions": "readeverything.adapters.ffmpeg_captions",
     "FileSource": "readeverything.ports.source",
     "FilesystemArtifactStore": "readeverything.adapters.artifact_store",
     "ImageContent": "readeverything.domain.rendition",
@@ -185,6 +216,7 @@ _LAZY: dict[str, str] = {
     "ReadEverythingError": "readeverything.domain.errors",
     "RecordingObserver": "readeverything.testing.fakes",
     "Rendered": "readeverything.domain.rendition",
+    "RemoteWhisperTranscriber": "readeverything.adapters.remote_whisper_transcriber",
     "Rendition": "readeverything.domain.rendition",
     "ResolutionMemo": "readeverything.pipeline.resolution",
     "Segment": "readeverything.domain.card",
