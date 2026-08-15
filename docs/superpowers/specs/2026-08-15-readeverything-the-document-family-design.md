@@ -249,10 +249,37 @@ model call per page.
 
 The existing key already covers what changes the answer — `content_hash`,
 `handler_id`, `handler_version`, affordance, params, and the capability
-fingerprint. OCR results key on `VISION`'s revision through that fingerprint, so
-swapping the model invalidates OCR artifacts and leaves extracted text alone,
-because extraction does not depend on the model. That falls out of the existing
-design rather than needing anything new, which is the design working.
+fingerprint.
+
+**Correction, measured during execution.** This section originally claimed that
+"swapping the model invalidates OCR artifacts and leaves extracted text alone,
+because extraction does not depend on the model", and called it "the design
+working". That is false, and it was written without checking:
+
+```
+OCR       model-a vs model-b differ: True
+read_page model-a vs model-b differ: True     # ← should not
+```
+
+`CapabilitySet.fingerprint()` digests the **whole** capability set, not the
+capabilities a given affordance requires. So swapping a vision model invalidates
+every cached `read_page`, `hexdump` and `read_range` artifact for every file —
+none of which depend on any model.
+
+The behaviour is **safe**: over-invalidation means recomputing and getting the
+same answer, never serving a wrong one. It is wasteful, not incorrect. And it is
+not a PDF defect — it is inherent to the key derivation as wired in Spec 3, and
+affects every handler. PDF merely made it visible by being the first handler
+with both model-dependent and model-independent affordances.
+
+**Deliberately not fixed here.** The real fix keys each artifact on only the
+capabilities its own affordance requires, which changes `artifact_key`'s
+signature and every call site. That deserves its own cycle and its own review
+rather than being rushed into this branch. Recorded as owed in the roadmap.
+
+The lesson is the one this project keeps paying for: a claim about what code
+does belongs in a spec only after running it. "That falls out of the existing
+design" was reasoning, presented as observation.
 
 ---
 
