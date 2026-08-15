@@ -195,6 +195,34 @@ async def test_represent_degrades_when_the_model_returns_an_empty_string() -> No
     assert "vision" in rendered.degradations[0].what
 
 
+async def test_an_undecodable_image_degrades_as_undecodable_not_as_missing_vision() -> None:
+    """The image was the problem, and the degradation must say which thing failed.
+
+    `vision unavailable` is load-bearing: it means no model configured or the
+    model call failed. Reusing it for bytes Pillow cannot open sent operators
+    looking at the wrong component.
+    """
+    vision = FakeVision()
+    handler = ImageHandler(source=FakeSource({"a.png": b"not an image at all"}), vision=vision)
+    rendered = await handler.represent(_ref(size=19), Budget(max_chars=None))
+    assert [d.what for d in rendered.degradations] == ["image undecodable"]
+    assert "a.png" in rendered.degradations[0].detail
+
+
+async def test_an_undecodable_image_is_never_shown_to_the_vision_model() -> None:
+    """Describing bytes that are not a decodable image indexes invention as fact."""
+    vision = FakeVision()
+    handler = ImageHandler(source=FakeSource({"a.png": b"not an image at all"}), vision=vision)
+    await handler.represent(_ref(size=19), Budget(max_chars=None))
+    assert vision.calls == 0
+
+
+async def test_a_decodable_image_with_vision_still_reports_no_degradations() -> None:
+    """Guard against closing the undecodable hole by degrading the healthy path too."""
+    rendered = await _seeing().represent(_ref(), Budget(max_chars=None))
+    assert rendered.degradations == ()
+
+
 class TestImageHandlerCompliance(MediaHandlerCompliance):
     @pytest.fixture
     def handler(self) -> ImageHandler:

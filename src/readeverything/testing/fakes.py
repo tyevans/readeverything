@@ -52,11 +52,19 @@ class FakeSource:
 
 
 class FakeVision:
-    """Describes an image by its size, deterministically."""
+    """Describes an image by its size, deterministically.
+
+    Counts its calls, so a test can assert a handler declined to invoke the
+    model at all — an assertion no return value can express.
+    """
 
     model_id: str = "fake-vision@1"
 
+    def __init__(self) -> None:
+        self.calls = 0
+
     async def describe(self, data: bytes, mime: str, prompt: str) -> str:
+        self.calls += 1
         return f"[{mime} image of {len(data)} bytes] {prompt}"
 
 

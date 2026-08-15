@@ -207,15 +207,25 @@ class ImageHandler:
 
     async def represent(self, ref: SourceRef, budget: Budget) -> Rendered:
         image = await self._open(ref)
-        if image is None:
-            facts = f"Unreadable image {ref.uri}, {ref.size_bytes} bytes."
-        else:
-            facts = (
-                f"Image {ref.uri}, {image.width}x{image.height} "
-                f"{image.format or 'unknown'} ({image.mode}), {ref.size_bytes} bytes."
-            )
         degradations: tuple[Degradation, ...] = ()
         described = ""
+        if image is None:
+            facts = f"Unreadable image {ref.uri}, {ref.size_bytes} bytes."
+            # Pillow reads a wide format set. If it cannot open these bytes this
+            # library has no standing to call them an image, and asking a model
+            # to describe them invites a hallucination indexed as an
+            # observation. Say what failed and stop.
+            degradations = (
+                Degradation(
+                    what="image undecodable",
+                    detail=f"{ref.uri} could not be decoded as an image; no description attempted",
+                ),
+            )
+            return self._rendered(facts, budget, degradations)
+        facts = (
+            f"Image {ref.uri}, {image.width}x{image.height} "
+            f"{image.format or 'unknown'} ({image.mode}), {ref.size_bytes} bytes."
+        )
         if self._vision is None:
             degradations = (
                 Degradation(
@@ -231,18 +241,29 @@ class ImageHandler:
                 # is better than indexing silence as an observation.
                 degradations = (Degradation(what="vision unavailable", detail=str(exc)),)
         full = f"{facts} {described}".strip() if described else facts
+        return self._rendered(full, budget, degradations)
+
+    def _rendered(
+        self, full: str, budget: Budget, degradations: tuple[Degradation, ...]
+    ) -> Rendered:
+        """Apply the budget and report what was actually kept.
+
+        A zero-width rendition is inexpressible: `CharSpan(0, 0)` raises, and
+        `Rendered` requires `locator_map.length == len(text)`. So a budget of
+        zero still keeps one character, and the degradation must report that one
+        character rather than the budget it was asked for — otherwise the
+        rendition and its own degradation contradict each other.
+        """
         text = full
         if budget.max_chars is not None and len(full) > budget.max_chars:
+            text = full[: budget.max_chars] or full[:1] or "?"
             degradations = (
                 *degradations,
                 Degradation(
                     what="text truncated",
-                    detail=f"kept {budget.max_chars} of {len(full)} characters",
+                    detail=f"kept {len(text)} of {len(full)} characters",
                 ),
             )
-            text = full[: budget.max_chars]
-        if not text:
-            text = full[:1] or "?"
         return Rendered(
             text=text,
             locator_map=LocatorMap.build((LocatorSegment(CharSpan(0, len(text)), WHOLE_IMAGE),)),
