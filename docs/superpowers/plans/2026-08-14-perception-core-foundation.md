@@ -784,6 +784,19 @@ class LocatorMap:
     def __post_init__(self) -> None:
         if not self.segments:
             raise ValueError("a locator map needs at least one segment")
+        # Sortedness is checked before the start-at-0 rule, and the order is
+        # load-bearing. Both `[(3,10)]` and `[(10,20), (0,10)]` have a first
+        # segment that does not start at 0, so a start-at-0 check placed first
+        # would report "must start at 0" for the unsorted case too — and the
+        # two failures want different messages, because they are different
+        # mistakes. Only a sortedness check can tell them apart.
+        for i in range(len(self.segments) - 1):
+            if self.segments[i].span.start >= self.segments[i + 1].span.start:
+                raise ValueError(
+                    f"segments must be sorted and gapless: expected a segment starting at "
+                    f"{self.segments[i].span.end}, got one starting at "
+                    f"{self.segments[i + 1].span.start}"
+                )
         if self.segments[0].span.start != 0:
             raise ValueError(f"segments must start at 0, got {self.segments[0].span.start}")
         cursor = 0
