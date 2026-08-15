@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from itertools import pairwise
 from pathlib import Path
 
 import pytest
@@ -45,4 +46,4 @@ async def test_the_fake_produces_cues_that_tile_without_gaps() -> None:
     cues = await FakeTranscriber().transcribe(b"x" * 1000, "audio/wav")
     assert cues
     assert all(c.span.start_s < c.span.end_s for c in cues)
-    assert all(a.span.end_s <= b.span.start_s for a, b in zip(cues, cues[1:], strict=False))
+    assert all(a.span.end_s <= b.span.start_s for a, b in pairwise(cues))
