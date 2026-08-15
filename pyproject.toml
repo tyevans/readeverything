@@ -101,6 +101,14 @@ forbidden_modules = [
     "readeverything.adapters",
 ]
 
+[tool.coverage.run]
+source = ["src/readeverything"]
+branch = true
+
+[tool.coverage.report]
+fail_under = 90
+show_missing = true
+
 [tool.bandit]
 exclude_dirs = ["tests", ".venv", "build", "dist"]
 

@@ -3925,10 +3925,12 @@ raised exception is the right signal for a caller that can branch on it, and
 the wrong one for a model, which sees a traceback, cannot act on it, and burns
 a turn discovering that.
 
-`never_raises` catches `BaseException` subclasses via `Exception` deliberately
-broadly: an adapter bug is exactly as unhelpful to a model as an expected
-failure, and letting one through would make the guarantee conditional on our
-own code being correct.
+`never_raises` catches `Exception` deliberately broadly: an adapter bug is
+exactly as unhelpful to a model as an expected failure, and letting one
+through would make the guarantee conditional on our own code being correct.
+It does NOT catch `BaseException` subclasses outside `Exception` — notably
+`asyncio.CancelledError`, `KeyboardInterrupt` and `SystemExit` — which must
+keep propagating. Swallowing `CancelledError` would break task cancellation.
 """
 
 from __future__ import annotations
