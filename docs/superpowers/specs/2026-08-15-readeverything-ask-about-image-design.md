@@ -161,10 +161,11 @@ This makes the expensive path easy to reach. That is the entire point of the
 change and also its main risk, and it should be stated plainly rather than
 discovered.
 
-On the live server, one still image measured ~1,089 prompt tokens and a single
-`describe_frame` call took ~65s. Nothing here makes an individual call cheaper.
-What changes is that an agent which previously needed two round trips and a
-schema-reading step to reach a vision model now reaches it in one.
+On the live server, one still image plus a short question measured 1,140 prompt
+tokens, and a single call took 19-34s (n=5, varying with completion length).
+Nothing here makes an individual call cheaper. What changes is that an agent
+which previously needed two round trips and a schema-reading step to reach a
+vision model now reaches it in one.
 
 Two existing mechanisms bound this, and both apply unchanged: `ask_about_image`
 runs under the same limiter as every other vision affordance, and the
@@ -173,9 +174,29 @@ to text before pixels on video. No new budget or cap is proposed here. If a cap
 turns out to be needed it should be added on measurement, not on the suspicion
 that this document is creating a problem it has not yet observed.
 
-A region-scoped ask on a large image is *cheaper* than the whole-image ask it
-replaces, since fewer pixels reach the model. This has not been measured and no
-number is claimed for it.
+**A region-scoped ask is not cheaper than the whole-image ask.** Measured
+2026-08-15 against `qwen3.8-27b-mtp`, on a 720x480 frame and crops of it:
+
+| Input | Pixels | `prompt_tokens` |
+|---|---|---|
+| whole frame 720x480 | 345,600 | 1,140 |
+| centre crop 360x240 | 86,400 | 1,140 |
+| centre crop 72x48 | 3,456 | 1,140 |
+
+One hundredth of the area costs exactly the same. The server resizes every
+image to a fixed grid before encoding it, so image cost is per *image*, not per
+pixel, and it cannot be turned down from the client — the same shape as the
+already-recorded finding that video cost is a function of duration alone. Wall
+time tracked completion length, not input size (26.8s whole vs 26.2s at
+quarter-area, across two reps each — noise).
+
+So `region` is a **precision feature, not an economy one**. It is worth having
+because it puts the crop in the locator rather than in prose, and because it
+stops an agent from having to describe which part of the picture it means. It
+does not reduce cost, and this document must not be read as claiming it does.
+The corollary is that "ask about four regions separately" costs four times "ask
+about the whole image once" — agents should be pointed at a region because the
+question is about that region, never as a saving.
 
 ## What gets built
 
