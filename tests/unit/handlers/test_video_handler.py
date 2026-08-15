@@ -30,6 +30,7 @@ from readeverything.handlers.video import (
     CAPTION_MARKER,
     MOMENT_SEPARATOR,
     SPEECH_MARKER,
+    AskAboutFrameParams,
     DescribeFrameParams,
     FrameAtParams,
     VideoHandler,
@@ -1529,3 +1530,52 @@ def test_a_long_clip_cost_is_not_extrapolated() -> None:
     assert "88,033" in message
     assert "1,260,000" not in message
     assert "at least" in message
+
+
+async def test_ask_about_image_is_absent_without_a_vision_model(sample_video: str) -> None:
+    handler = _handler(sample_video)
+    assert "ask_about_image" not in {a.name for a in handler.affordances()}
+
+
+async def test_ask_about_image_asks_about_the_frame_at_a_time(sample_video: str) -> None:
+    vision = FakeVision()
+    handler = _handler(sample_video, vision=vision)
+    rendition = await handler.invoke(
+        _ref(), "ask_about_image", AskAboutFrameParams(question="Who is speaking?", seconds=2.0)
+    )
+    assert isinstance(rendition.content, TextContent)
+    assert "Who is speaking?" in rendition.content.text
+    assert vision.calls == 1
+
+
+async def test_the_locator_is_the_timespan(sample_video: str) -> None:
+    handler = _handler(sample_video, vision=FakeVision())
+    rendition = await handler.invoke(
+        _ref(), "ask_about_image", AskAboutFrameParams(question="q", seconds=2.0)
+    )
+    assert isinstance(rendition.locator, TimeSpan)
+    assert rendition.locator.start_s == 2.0
+
+
+async def test_a_region_narrows_what_the_model_sees(sample_video: str) -> None:
+    vision = FakeVision()
+    handler = _handler(sample_video, vision=vision)
+    whole = await handler.invoke(
+        _ref(), "ask_about_image", AskAboutFrameParams(question="q", seconds=1.0)
+    )
+    part = await handler.invoke(
+        _ref(),
+        "ask_about_image",
+        AskAboutFrameParams(question="q", seconds=1.0, x=0.0, y=0.0, w=0.5, h=0.5),
+    )
+    assert isinstance(whole.content, TextContent)
+    assert isinstance(part.content, TextContent)
+    assert whole.content.text != part.content.text
+
+
+async def test_an_unreachable_frame_degrades_rather_than_raising() -> None:
+    handler = _stub_handler(_facts(), frames=_NoFrames(), vision=FakeVision())
+    rendition = await handler.invoke(
+        _ref(), "ask_about_image", AskAboutFrameParams(question="q", seconds=1.0)
+    )
+    assert rendition.degraded
