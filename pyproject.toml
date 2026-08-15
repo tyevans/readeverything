@@ -100,3 +100,18 @@ forbidden_modules = [
     "readeverything.handlers",
     "readeverything.adapters",
 ]
+
+[tool.bandit]
+exclude_dirs = ["tests", ".venv", "build", "dist"]
+
+# B101 (`assert_used`) is silenced for `readeverything/testing/` and nowhere
+# else. That package is the port compliance suites, which live under `src/` so
+# they can ship to handler authors outside this repository. They are test
+# bodies: `assert` is what they are made of, and B101 exists to catch an
+# `assert` load-bearing in *production* code, where `python -O` deletes it.
+#
+# A path skip, not `exclude_dirs`, and the difference is the whole point:
+# excluding the directory would drop it from every bandit check, so a real
+# vulnerability there would go unseen. This silences one rule, in one place.
+[tool.bandit.assert_used]
+skips = ["*/readeverything/testing/*.py"]

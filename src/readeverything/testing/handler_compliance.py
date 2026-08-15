@@ -46,14 +46,14 @@ class MediaHandlerCompliance:
         )
         first = await handler.describe(ref)
         second = await handler.describe(moved)
-        assert first.kind == second.kind  # nosec B101 -- compliance-suite assertion, not a defensive check
-        assert dict(first.facts) == dict(second.facts)  # nosec B101 -- compliance-suite assertion, not a defensive check
-        assert first.outline == second.outline  # nosec B101 -- compliance-suite assertion, not a defensive check
-        assert first.excerpt == second.excerpt  # nosec B101 -- compliance-suite assertion, not a defensive check
+        assert first.kind == second.kind
+        assert dict(first.facts) == dict(second.facts)
+        assert first.outline == second.outline
+        assert first.excerpt == second.excerpt
 
     async def test_the_card_kind_is_a_media_kind(self, handler, ref) -> None:  # type: ignore[no-untyped-def]
         card = await handler.describe(ref)
-        assert isinstance(card.kind, MediaKind)  # nosec B101 -- compliance-suite assertion, not a defensive check
+        assert isinstance(card.kind, MediaKind)
 
     async def test_declared_affordances_are_invocable(self, handler, content, ref) -> None:  # type: ignore[no-untyped-def]
         """Every declared affordance can be invoked with default parameters.
@@ -75,11 +75,11 @@ class MediaHandlerCompliance:
     async def test_represent_produces_a_map_covering_its_text(self, handler, ref) -> None:  # type: ignore[no-untyped-def]
         """`Rendered` validates this itself; this proves the handler builds one."""
         rendered = await handler.represent(ref, Budget(max_chars=None))
-        assert rendered.locator_map.length == len(rendered.text)  # nosec B101 -- compliance-suite assertion, not a defensive check
+        assert rendered.locator_map.length == len(rendered.text)
 
     async def test_represent_respects_a_budget_or_reports_degradation(self, handler, ref) -> None:  # type: ignore[no-untyped-def]
         """Truncation must be announced. Silent truncation is invisible in
         exactly the case where the answer is wrong."""
         budget = Budget(max_chars=10)
         rendered = await handler.represent(ref, budget)
-        assert budget.permits(len(rendered.text)) or rendered.degradations  # nosec B101 -- compliance-suite assertion, not a defensive check
+        assert budget.permits(len(rendered.text)) or rendered.degradations

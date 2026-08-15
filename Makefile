@@ -19,7 +19,7 @@ arch:
 	$(UV) lint-imports
 
 sec:
-	$(UV) bandit -q -r src
+	$(UV) bandit -q -c pyproject.toml -r src
 	$(UV) pip-audit
 
 test:
