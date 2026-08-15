@@ -40,6 +40,14 @@ def _reject_non_primitives(value: Any, path: str) -> None:
         return
     if isinstance(value, Mapping):
         for key, item in value.items():
+            if not isinstance(key, str):
+                # `json.dumps` stringifies keys, so {1: "v"} and {"1": "v"}
+                # would hash the same — the same collision as `default=str`,
+                # one level down.
+                raise DomainError(
+                    f"cache key param {path} has a non-string key: {type(key).__name__}. "
+                    f"Affordance params must be JSON-representable so the key is stable."
+                )
             _reject_non_primitives(item, f"{path}.{key}")
         return
     if isinstance(value, (list, tuple)):

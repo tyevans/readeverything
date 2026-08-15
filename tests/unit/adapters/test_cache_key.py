@@ -69,3 +69,33 @@ def test_a_non_primitive_nested_deep_is_refused() -> None:
 def test_the_refused_type_is_named_in_the_message() -> None:
     with pytest.raises(DomainError, match="PosixPath"):
         _key(params={"path": Path("a")})
+
+
+def test_an_int_keyed_mapping_no_longer_collides_with_its_string_keyed_twin() -> None:
+    """`json.dumps` stringifies keys, so {1: "v"} and {"1": "v"} hashed identically.
+
+    That is the same two-derivations-one-artifact collision this function exists
+    to close, surviving one level down in the structure. Refusing the int key is
+    what makes the two inexpressible as one key.
+    """
+    assert _key(params={"o": {"1": "v"}})
+    with pytest.raises(DomainError, match="non-string key"):
+        _key(params={"o": {1: "v"}})
+
+
+def test_a_mixed_key_mapping_raises_a_domain_error_not_a_type_error() -> None:
+    """`sort_keys=True` compared int to str and leaked a bare TypeError."""
+    with pytest.raises(DomainError):
+        _key(params={"o": {1: "a", "b": "c"}})
+
+
+def test_a_nested_non_string_key_names_its_path() -> None:
+    with pytest.raises(DomainError, match=r"params\.a\[1\]"):
+        _key(params={"a": [1, {2: "x"}]})
+
+
+def test_string_keyed_nested_mappings_still_produce_a_stable_key() -> None:
+    """Guard against closing the collision by over-rejecting legitimate structure."""
+    assert _key(params={"a": {"b": {"c": [1, "two", None]}}}) == _key(
+        params={"a": {"b": {"c": [1, "two", None]}}}
+    )
