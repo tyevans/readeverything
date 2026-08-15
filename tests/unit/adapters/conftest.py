@@ -3,7 +3,13 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from tests.fixtures_media import ffmpeg_available, scene_cuts, video_with_audio
+from tests.fixtures_media import (
+    audio_only,
+    ffmpeg_available,
+    scene_cuts,
+    video_only,
+    video_with_audio,
+)
 from tests.fixtures_pdf import born_digital
 
 
@@ -18,6 +24,24 @@ def sample_video(tmp_path: Path) -> str:
         pytest.skip("ffmpeg not available")
     path = tmp_path / "sample.mp4"
     path.write_bytes(video_with_audio())
+    return str(path)
+
+
+@pytest.fixture
+def video_only_path(tmp_path: Path) -> str:
+    if not ffmpeg_available():
+        pytest.skip("ffmpeg not available")
+    path = tmp_path / "video_only.mp4"
+    path.write_bytes(video_only())
+    return str(path)
+
+
+@pytest.fixture
+def audio_only_path(tmp_path: Path) -> str:
+    if not ffmpeg_available():
+        pytest.skip("ffmpeg not available")
+    path = tmp_path / "audio_only.wav"
+    path.write_bytes(audio_only())
     return str(path)
 
 

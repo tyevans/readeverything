@@ -39,6 +39,8 @@ CONFINED: dict[str, set[str]] = {
         "adapters/ffprobe_streams.py",
         # ffmpeg, same pattern, extracting a single frame.
         "adapters/ffmpeg_frames.py",
+        # ffmpeg, same pattern, extracting the audio track.
+        "adapters/ffmpeg_audio.py",
     },
     # shutil.which locates the executable a capability probe is about to run;
     # confined to the one adapter that probes binaries.

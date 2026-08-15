@@ -80,6 +80,21 @@ def video_only(seconds: int = 2) -> bytes:
         )
 
 
+def audio_only(seconds: int = 3) -> bytes:
+    """A WAV file with a sine-wave tone and no video stream at all."""
+    with tempfile.TemporaryDirectory() as tmp:
+        out_path = Path(tmp) / "audio_only.wav"
+        return _run_ffmpeg(
+            [
+                "-f",
+                "lavfi",
+                "-i",
+                f"sine=frequency=440:duration={seconds}",
+            ],
+            out_path,
+        )
+
+
 def scene_cuts(seconds_each: int = 2) -> bytes:
     """Two visually distinct segments concatenated, so a cut is detectable.
 
