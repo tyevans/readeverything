@@ -1,0 +1,93 @@
+# Local quality gate. Install once with `uv run pre-commit install`.
+#
+# Everything below the hygiene block runs out of the project's uv environment,
+# so the versions here are the ones `make check` and CI use -- a hook that
+# pinned its own ruff would be a second, silently different opinion about the
+# same files.
+#
+# The test suite deliberately does NOT run here. `make test` takes over two
+# minutes, and CI runs exactly the same selection on every push; paying that on
+# every commit buys a few minutes of earlier warning at the cost of the
+# many-small-commits workflow this repository is written in. The coverage floor
+# lives in `[tool.coverage.report] fail_under`, so it is enforced wherever the
+# suite runs rather than by the hook.
+#
+# `pip-audit` is likewise CI-only: it needs the network, and a commit should
+# not fail because a vulnerability database was briefly unreachable.
+
+default_install_hook_types: [pre-commit]
+fail_fast: true
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-case-conflict
+      - id: check-added-large-files
+        # `tests/fixtures_media.py` generates its media at run time, but
+        # `media/` holds real samples that are genuinely large.
+        args: [--maxkb=2048]
+      - id: debug-statements
+      - id: mixed-line-ending
+        args: [--fix=lf]
+      - id: check-ast
+
+  - repo: local
+    hooks:
+      # Both ruff hooks take no filenames and look at the whole repository,
+      # because that is what CI runs (`ruff check .`, `ruff format --check .`).
+      # A hook scoped to changed files and a CI step scoped to the tree can
+      # disagree -- and when they do, the failure lands on a pull request whose
+      # diff never touched the offending file.
+      - id: ruff-check
+        name: ruff check
+        entry: uv run ruff check --fix
+        language: system
+        types_or: [python, pyi, markdown]
+        pass_filenames: false
+        require_serial: true
+
+      - id: ruff-format
+        name: ruff format
+        entry: uv run ruff format
+        language: system
+        types_or: [python, pyi, markdown]
+        pass_filenames: false
+        require_serial: true
+
+      # No filenames, for the same reason CI passes none: naming files
+      # bypasses `[tool.mypy] files` and answers a different question than the
+      # gate does.
+      - id: mypy
+        name: mypy
+        entry: uv run mypy
+        language: system
+        types_or: [python, pyi]
+        pass_filenames: false
+        require_serial: true
+
+      # `-r src` rather than the changed files: the whole package, matching
+      # CI. A per-file hook can stay green for months without having looked at
+      # most of the tree.
+      - id: bandit
+        name: bandit
+        entry: uv run bandit -q -c pyproject.toml -r src
+        language: system
+        types: [python]
+        pass_filenames: false
+        require_serial: true
+
+      # The layering contract can break from a change to one import, so this
+      # runs whenever `src/` or the contract itself moves.
+      - id: import-linter
+        name: import-linter
+        entry: uv run lint-imports
+        language: system
+        pass_filenames: false
+        files: ^(src/|pyproject\.toml$)
+        require_serial: true
