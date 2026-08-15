@@ -41,9 +41,6 @@ class UnknownAffordanceError(DomainError):
         offered = ", ".join(sorted(available)) or "none"
         super().__init__(f"unknown affordance {name!r}; this handler offers: {offered}")
         self.name = name
-        #: The same name, under the word a caller reaching for it would use.
-        #: `.name` on an exception reads as the exception's own name.
-        self.affordance = name
 
 
 class CapabilityUnavailableError(DomainError):

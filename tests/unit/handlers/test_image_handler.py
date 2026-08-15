@@ -204,7 +204,7 @@ async def test_invoking_ocr_without_vision_names_ocr_and_not_describe_image() ->
     """
     with pytest.raises(UnknownAffordanceError) as caught:
         await _handler().invoke(_ref(), "ocr", OcrParams())
-    assert caught.value.affordance == "ocr"
+    assert caught.value.name == "ocr"
 
 
 async def test_a_crop_may_not_run_off_the_right_edge_of_the_image() -> None:
