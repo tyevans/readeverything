@@ -9,7 +9,9 @@ module drifts out of its home.
 import ast
 from pathlib import Path
 
-SRC = Path(__file__).resolve().parents[2] / "src" / "readeverything"
+ROOT = Path(__file__).resolve().parents[2]
+SRC = ROOT / "src" / "readeverything"
+TESTS = ROOT / "tests"
 
 #: top-level third-party module -> the only files that may import it
 CONFINED: dict[str, set[str]] = {
@@ -33,6 +35,14 @@ CONFINED: dict[str, set[str]] = {
     "shutil": {"adapters/binary_probe.py"},
 }
 
+#: `deepagents` is exercised only by the integration test proving the README's
+#: composition actually constructs. It is optional (the `agents` extra) and
+#: must never leak into `src/` — CONFINED above enforces that already, since
+#: `deepagents` names no home there. This is the mirror rule for `tests/`:
+#: exactly one test file may import it, so a stray import elsewhere (which
+#: would make the whole suite depend on the extra) fails loudly here instead.
+DEEPAGENTS_CONFINED_TEST_FILE = "integration/test_deepagents_composition.py"
+
 
 def _imported_roots(tree: ast.AST) -> set[str]:
     roots: set[str] = set()
@@ -52,6 +62,17 @@ def test_each_dependency_is_confined_to_its_declared_home() -> None:
             if root in CONFINED and relative not in CONFINED[root]:
                 violations.append(f"{relative} imports {root}")
     assert not violations, f"confinement violated: {violations}"
+
+
+def test_deepagents_is_confined_to_the_one_composition_test() -> None:
+    violations: list[str] = []
+    for path in TESTS.rglob("*.py"):
+        relative = str(path.relative_to(TESTS))
+        if "deepagents" in _imported_roots(ast.parse(path.read_text())) and (
+            relative != DEEPAGENTS_CONFINED_TEST_FILE
+        ):
+            violations.append(relative)
+    assert not violations, f"deepagents imported outside its confined test: {violations}"
 
 
 def test_the_confinement_table_is_live() -> None:

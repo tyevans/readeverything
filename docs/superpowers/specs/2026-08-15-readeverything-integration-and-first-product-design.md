@@ -482,8 +482,10 @@ survive contact with the package, dropping it is right, and §10 already
 excluded it from acceptance for precisely this exposure.
 
 **What ships instead:** `create_deep_agent(tools=build_tools(perception))`,
-which works today with no new dependency, is documented in the README, and
-is covered by a test.
+which is documented in the README and covered by
+`tests/integration/test_deepagents_composition.py`, behind the optional
+`agents` extra (`deepagents>=0.7,<0.8`, also in `dev` so the test runs in
+this repo's own gate rather than silently skipping).
 
 **The transferable lesson**, and the second time this project has paid for
 it: a subagent's factual claim about the shape of code is still a claim.
