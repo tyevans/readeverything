@@ -348,10 +348,15 @@ async def test_represent_reports_started_and_finished_with_the_ref() -> None:
     assert finished.elapsed_s >= 0.0
 
 
-async def test_without_an_observer_behaviour_is_unchanged() -> None:
-    before = await _handler(COMPLIANCE_PDF).represent(_ref(), Budget(max_chars=None))
-    after = await _handler(COMPLIANCE_PDF, observer=None).represent(_ref(), Budget(max_chars=None))
-    assert before == after
+async def test_attaching_an_observer_does_not_change_the_result() -> None:
+    """Unobserved output and observed output are the same `Rendered`."""
+    recorder = RecordingObserver()
+    unobserved = await _handler(COMPLIANCE_PDF).represent(_ref(), Budget(max_chars=None))
+    observed = await _handler(COMPLIANCE_PDF, observer=recorder).represent(
+        _ref(), Budget(max_chars=None)
+    )
+    assert unobserved == observed
+    assert recorder.events, "the observed arm must actually have been observed"
 
 
 async def test_an_observer_that_raises_does_not_change_the_result() -> None:

@@ -33,13 +33,15 @@ async def test_an_observer_sees_a_whole_directory_being_read(media_root: Path) -
     assert all(e.elapsed_s >= 0.0 for e in finished)
 
 
-async def test_defaults_change_nothing(media_root: Path) -> None:
-    """No observer, no limiter — today's behaviour exactly."""
-    without = await build_perception(media_root, vision=FakeVision(), probe_binaries=False)
-    with_defaults = await build_perception(
-        media_root, vision=FakeVision(), observer=None, limiter=None, probe_binaries=False
+async def test_observing_changes_nothing(media_root: Path) -> None:
+    """Attaching an observer perturbs no rendition anywhere in the directory."""
+    recorder = RecordingObserver()
+    unobserved = await build_perception(media_root, vision=FakeVision(), probe_binaries=False)
+    observed = await build_perception(
+        media_root, vision=FakeVision(), observer=recorder, probe_binaries=False
     )
-    for uri in await without.list("."):
-        before = await without.represent(uri, Budget(max_chars=None))
-        after = await with_defaults.represent(uri, Budget(max_chars=None))
+    for uri in await unobserved.list("."):
+        before = await unobserved.represent(uri, Budget(max_chars=None))
+        after = await observed.represent(uri, Budget(max_chars=None))
         assert before.text == after.text
+    assert recorder.events, "the observed arm must actually have been observed"

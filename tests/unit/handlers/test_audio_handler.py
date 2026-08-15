@@ -613,15 +613,18 @@ async def test_an_unknown_affordance_raises() -> None:
         )
 
 
-async def test_without_an_observer_behaviour_is_unchanged(audio_path: str) -> None:
-    """Every existing audio test rests on this."""
-    before = await _handler(audio_path, transcriber=FakeTranscriber()).represent(
+async def test_attaching_an_observer_does_not_change_the_result(audio_path: str) -> None:
+    """Unobserved output and observed output are the same. Every audio test rests on this."""
+    recorder = RecordingObserver()
+    unobserved = await _handler(audio_path, transcriber=FakeTranscriber()).represent(
         _ref(), Budget(max_chars=None)
     )
-    after = await _handler(audio_path, transcriber=FakeTranscriber(), observer=None).represent(
-        _ref(), Budget(max_chars=None)
-    )
-    assert before.text == after.text
+    observed = await _handler(
+        audio_path, transcriber=FakeTranscriber(), observer=recorder
+    ).represent(_ref(), Budget(max_chars=None))
+    assert unobserved.text == observed.text
+    assert unobserved.locator_map.length == observed.locator_map.length
+    assert recorder.events, "the observed arm must actually have been observed"
 
 
 async def test_an_observer_that_raises_does_not_change_the_result(audio_path: str) -> None:
