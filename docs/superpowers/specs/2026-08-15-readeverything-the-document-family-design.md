@@ -50,8 +50,33 @@ example from hypothetical into real.
 > one. `inspect` tells you the page count without extracting anything. `represent`
 > returns text whose every character resolves to the page it came from, with
 > barriers at page breaks. Asking for page 7 returns page 7. The scanned PDF
-> says plainly that its text is in images, and — where a vision capability
-> exists — reads it anyway and says that it did.
+> says plainly that its text is in images rather than reporting itself empty,
+> and — where a vision capability exists — offers `ocr_page`, which reads it and
+> says that a model did the reading.
+
+**Corrected during execution: this sentence contradicted §11.** As first
+written it ended "— where a vision capability exists — reads it anyway and said
+that it did", describing `represent()`. §11 says the opposite, and says it
+correctly: OCR "is `DEEP`, gated on `VISION`, cached, and never runs during
+`inspect` or `represent`. A caller must ask for it by name." The code follows
+§11, so criterion 1 was unmeetable as written.
+
+§11 is the right design and §1.1 was the error. `represent()` is the indexing
+feed; OCR inside it means one model call per page — four hundred sequential
+calls for a four-hundred-page scan, with no concurrency (deferred to a later
+cycle) and no budget that covers model calls. The whole progressive-disclosure
+design exists so `DEEP` work is asked for by name.
+
+**What this costs, recorded rather than hidden:** a scanned document's
+`represent()` contributes no readable text to an index. An agent can still read
+it through `ocr_page`, but an index built only from `represent()` will not
+contain it. Closing that needs budget semantics for model calls ("OCR up to N
+pages") and the concurrency to make it bearable — owed, and recorded in the
+roadmap, not smuggled in here.
+
+The lesson, again: a spec self-review that claims to check internal consistency
+has to actually check section against section. This contradiction sat two
+sections apart and survived mine.
 
 ---
 
@@ -249,10 +274,37 @@ model call per page.
 
 The existing key already covers what changes the answer — `content_hash`,
 `handler_id`, `handler_version`, affordance, params, and the capability
-fingerprint. OCR results key on `VISION`'s revision through that fingerprint, so
-swapping the model invalidates OCR artifacts and leaves extracted text alone,
-because extraction does not depend on the model. That falls out of the existing
-design rather than needing anything new, which is the design working.
+fingerprint.
+
+**Correction, measured during execution.** This section originally claimed that
+"swapping the model invalidates OCR artifacts and leaves extracted text alone,
+because extraction does not depend on the model", and called it "the design
+working". That is false, and it was written without checking:
+
+```
+OCR       model-a vs model-b differ: True
+read_page model-a vs model-b differ: True     # ← should not
+```
+
+`CapabilitySet.fingerprint()` digests the **whole** capability set, not the
+capabilities a given affordance requires. So swapping a vision model invalidates
+every cached `read_page`, `hexdump` and `read_range` artifact for every file —
+none of which depend on any model.
+
+The behaviour is **safe**: over-invalidation means recomputing and getting the
+same answer, never serving a wrong one. It is wasteful, not incorrect. And it is
+not a PDF defect — it is inherent to the key derivation as wired in Spec 3, and
+affects every handler. PDF merely made it visible by being the first handler
+with both model-dependent and model-independent affordances.
+
+**Deliberately not fixed here.** The real fix keys each artifact on only the
+capabilities its own affordance requires, which changes `artifact_key`'s
+signature and every call site. That deserves its own cycle and its own review
+rather than being rushed into this branch. Recorded as owed in the roadmap.
+
+The lesson is the one this project keeps paying for: a claim about what code
+does belongs in a spec only after running it. "That falls out of the existing
+design" was reasoning, presented as observation.
 
 ---
 
@@ -283,8 +335,11 @@ design rather than needing anything new, which is the design working.
 4. Every character of a multi-page PDF's `represent()` output resolves to the
    page it came from — asserted across page boundaries, not just in the middle
    of page one.
-5. A scanned PDF is never reported as empty, with or without a vision
-   capability. Both paths are tested.
+5. A scanned PDF's `represent()` never reports it as empty, and says its text
+   is in images. This is independent of whether a vision capability exists,
+   because `represent()` does not OCR (§11) — so there are not two paths here,
+   and the original wording's "both paths are tested" claimed a distinction the
+   design does not draw. Reading a scan is `ocr_page`'s job and is criterion 6.
 6. OCR'd text is distinguishable from extracted text by a consumer.
 7. A base install without the `documents` extra still builds a working
    `Perception`; PDFs fall through to the binary fallback.

@@ -16,6 +16,7 @@ observable, with strong DDD and SOLID vision, built from real user stories.
 | 1. Perception core | Plan 1 | — | 150 tests |
 | 1 (vision half) | Plan 2 | `618d1a2` | 230 tests, image family, live model |
 | 3. Integration & first product | Plan 3 | `60ed781` | 335 tests, 94.69%, composition root, cache wired, capability discovery, integration tier, README |
+| 4. The document family | Plan 4 | pending | 381 tests, 94.16%. PDF via pypdfium2. First honest producers of `PageRef`, `BBox`-on-a-page, and `Rendered.barriers` |
 
 ## The two tracks, and why this order
 
@@ -37,10 +38,11 @@ recorded audio, video) are exactly the ones missing.
 
 ## Planned cycles
 
-**Cycle 4 — the document family (PDF first).**
-Ports owed since Spec 1: `MediaProbe`, `TextRecognizer`. PDF is the highest-value
-single format and the hardest locator problem (page + bbox), so it sets the
-pattern the rest follow. Includes OCR fallback for scanned PDFs.
+**Cycle 4 — the document family (PDF first).** ✅ **Done.** `MediaProbe`,
+`TextRecognizer`, `PdfHandler` with `read_page`/`page_region`/`page_image`/
+`ocr_page`, page-mapped `represent()` with page-break barriers, and the
+scanned-versus-blank distinction (they are identical through the text layer;
+`page.get_objects()` is what tells them apart).
 
 **Cycle 5 — the time-based family (audio, video).**
 Ports: `AudioExtractor`, `FrameExtractor`, `Transcriber`, `Diarizer`. `TimeSpan`
@@ -63,6 +65,33 @@ units that keep provenance, retrieval, and citations that resolve through
 
 **Cycle 8+ — re-evaluate.** Candidates: office documents, archives, incremental
 re-indexing of changed trees, a whole-tree `ask`, richer agent tooling.
+
+## Owed, discovered during Cycle 4
+
+**Per-affordance cache keys.** `CapabilitySet.fingerprint()` digests the whole
+capability set, not the capabilities a given affordance requires. Measured:
+swapping a vision model changes the key for `read_page`, `hexdump` and
+`read_range` — none of which depend on any model — so one model swap discards
+every cached artifact for every file. Safe (over-invalidation recomputes and
+gets the same answer) but wasteful. The fix keys each artifact on only the
+capabilities its own affordance requires, which changes `artifact_key`'s
+signature and every call site. Inherent to the key derivation wired in Spec 3;
+PDF only made it visible by being the first handler with both model-dependent
+and model-independent affordances.
+
+**OCR during `represent()`, with a budget.** `represent()` deliberately does not
+OCR: it is the indexing feed, and OCR is one model call per page — four hundred
+sequential calls for a four-hundred-page scan. The cost is real and recorded:
+a scanned document contributes no readable text to an index built only from
+`represent()`. It stays readable through `ocr_page`. Closing this needs
+model-call budget semantics ("OCR up to N pages") and the concurrency to make it
+bearable, so it lands with or after Cycle 6.
+
+**Two open sites for pdfium.** `adapters/pdfium_probe.open_document` raises
+`InfrastructureError`; `PdfHandler._open` returns `None` and degrades. The
+difference is intentional — a probe may fail loudly, a handler must never raise
+— and both docstrings now say so. Worth revisiting only if a third opener
+appears.
 
 ## Open questions the research must settle
 

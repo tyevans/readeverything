@@ -29,6 +29,7 @@ from readeverything.pipeline.resolution import ResolutionMemo
 from readeverything.ports.artifacts import ArtifactStore
 from readeverything.ports.handler import MediaHandler
 from readeverything.ports.probe import CapabilityProbe
+from readeverything.ports.recognition import TextRecognizer
 from readeverything.ports.source import SourceReader
 from readeverything.ports.vision import VisionModel
 from readeverything.registry.registry import MimeTypeRegistry
@@ -66,6 +67,29 @@ def _optional_image_handler(source: SourceReader, vision: VisionModel | None) ->
     return [ImageHandler(source=source, vision=vision)]
 
 
+def _optional_pdf_handler(source: SourceReader, vision: VisionModel | None) -> list[MediaHandler]:
+    """`PdfHandler` when pypdfium2 is importable, nothing when it is not.
+
+    pypdfium2 lives behind the `documents` extra, guarded exactly like
+    `_optional_image_handler` guards Pillow: narrower, not broken, on a base
+    install.
+
+    The recogniser is built from `vision` when one was supplied, so OCR
+    negotiates on the capability the caller already provided rather than
+    needing a second knob.
+    """
+    try:
+        from readeverything.adapters.pdfium_probe import PdfiumProbe
+        from readeverything.adapters.vision_recognizer import VisionTextRecognizer
+        from readeverything.handlers.pdf import PdfHandler
+    except ImportError:
+        return []
+    recognizer: TextRecognizer | None = (
+        VisionTextRecognizer(vision=vision) if vision is not None else None
+    )
+    return [PdfHandler(source=source, probe=PdfiumProbe(), recognizer=recognizer)]
+
+
 async def build_perception(
     root: Path | str,
     *,
@@ -91,6 +115,7 @@ async def build_perception(
     handlers: list[MediaHandler] = [
         TextHandler(source=source),
         *_optional_image_handler(source, vision),
+        *_optional_pdf_handler(source, vision),
         # The fallback claims "*", so it must be last: the registry breaks a
         # rank tie by registration order, and a fallback registered first would
         # shadow nothing but would rank ahead of an equally-specific match.
