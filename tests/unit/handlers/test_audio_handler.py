@@ -111,6 +111,47 @@ class _LateFirstCue:
         )
 
 
+class _CueBeyondTheDuration:
+    """A transcriber that disagrees with the probe about the file's length.
+
+    The first cue is inside the file; the second starts a full minute after a
+    three-second file ends. Real transcribers do this when handed audio whose
+    container header lies about its duration.
+    """
+
+    model_id = "overrunning-asr@1"
+
+    async def transcribe(self, audio: bytes, mime: str) -> tuple[TranscriptCue, ...]:
+        return (
+            TranscriptCue(span=TimeSpan(0.5, 1.5), text="inside", speaker=None, confidence=None),
+            TranscriptCue(span=TimeSpan(60.0, 61.0), text="beyond", speaker=None, confidence=None),
+        )
+
+
+class _OverhangingCue:
+    """One cue, straddling the end of the file. The utterance happened; only
+    its tail is in dispute."""
+
+    model_id = "overhanging-asr@1"
+
+    async def transcribe(self, audio: bytes, mime: str) -> tuple[TranscriptCue, ...]:
+        return (
+            TranscriptCue(span=TimeSpan(0.5, 1.0), text="early", speaker=None, confidence=None),
+            TranscriptCue(span=TimeSpan(2.5, 8.0), text="overhang", speaker=None, confidence=None),
+        )
+
+
+class _EntirelyBeyondTheDuration:
+    """Every cue after the end of the file. Nothing survives the clamp."""
+
+    model_id = "wholly-overrunning-asr@1"
+
+    async def transcribe(self, audio: bytes, mime: str) -> tuple[TranscriptCue, ...]:
+        return (
+            TranscriptCue(span=TimeSpan(30.0, 31.0), text="far", speaker=None, confidence=None),
+        )
+
+
 class _CoincidentCues:
     """Two cues at the same timestamp — legal, and a zero-width span is not."""
 
@@ -295,6 +336,58 @@ async def test_the_timeline_covers_the_whole_duration_with_no_gaps(
     assert spans[0].start_s == 0.0
     for earlier, later in pairwise(spans):
         assert earlier.end_s == pytest.approx(later.start_s)
+
+
+async def test_the_last_cue_extends_to_the_file_duration(audio_path: str) -> None:
+    """The rule the spec states, which no test exercised.
+
+    The fake's cues used to run 47.9x past the file's duration, so the last cue
+    always got a floored minimum width and the extend-to-duration branch never
+    ran. A timeline is of the FILE, so its final moment ends where the file does.
+    """
+    handler = _handler(audio_path, transcriber=FakeTranscriber())
+    card = await handler.describe(_ref())
+    duration_s = card.facts["duration_s"]
+    assert isinstance(duration_s, float)
+    rendered = await handler.represent(_ref(), Budget(max_chars=None))
+    spans = _spans(rendered.locator_map.segments)
+    assert len(spans) > 1
+    assert spans[-1].end_s == pytest.approx(duration_s)
+
+
+async def test_a_cue_beyond_the_duration_is_dropped_and_reported() -> None:
+    """A transcriber that disagrees with the probe about the file's length is
+    reporting something worth knowing. Dropping it silently would hide the
+    disagreement; keeping it would put a locator on a moment the file does not
+    have."""
+    rendered = await _stub_handler(
+        _facts(duration_s=3.0), transcriber=_CueBeyondTheDuration()
+    ).represent(_ref(), Budget(max_chars=None))
+    spans = _spans(rendered.locator_map.segments)
+    assert len(spans) == 1
+    assert spans[0] == TimeSpan(0.0, 3.0)
+    assert "beyond" not in rendered.text
+    assert any("outside the file" in d.what for d in rendered.degradations)
+
+
+async def test_a_cue_overhanging_the_end_is_truncated_not_dropped() -> None:
+    """The utterance did happen; only its tail is in dispute."""
+    rendered = await _stub_handler(_facts(duration_s=3.0), transcriber=_OverhangingCue()).represent(
+        _ref(), Budget(max_chars=None)
+    )
+    spans = _spans(rendered.locator_map.segments)
+    assert "overhang" in rendered.text
+    assert spans[-1].end_s == pytest.approx(3.0)
+    assert rendered.degradations == ()
+
+
+async def test_a_transcript_entirely_outside_the_file_says_so() -> None:
+    rendered = await _stub_handler(
+        _facts(duration_s=3.0), transcriber=_EntirelyBeyondTheDuration()
+    ).represent(_ref(), Budget(max_chars=None))
+    assert rendered.degradations[0].what == "transcript outside the file"
+    assert rendered.text.strip()
+    assert isinstance(rendered.locator_map.resolve(0), TimeSpan)
 
 
 async def test_the_first_span_starts_at_zero_even_when_speech_does_not() -> None:

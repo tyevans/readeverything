@@ -30,6 +30,7 @@ here imports an adapter.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import ClassVar
 
 from pydantic import BaseModel, Field
@@ -132,6 +133,32 @@ def _cue_bounds(
         else:
             bounds.append((start, max(duration_s, start + MIN_CUE_SPAN_S)))
     return tuple(bounds)
+
+
+def _clamp_to_duration(
+    cues: tuple[TranscriptCue, ...], duration_s: float
+) -> tuple[tuple[TranscriptCue, ...], int]:
+    """The cues that the probed file actually has room for, and how many it did not.
+
+    A transcriber is free to disagree with the probe about how long a file is,
+    and when it does, one of them is wrong. A cue that merely OVERHANGS the end
+    is truncated: the utterance did happen, and only its tail is in dispute. A
+    cue that STARTS at or past the duration is dropped entirely — keeping it
+    would put a locator on a moment the file does not contain, which is exactly
+    the claim this library exists not to make.
+
+    The count of dropped cues is returned rather than swallowed so
+    `represent()` can report the disagreement as a `Degradation`. Silently
+    discarding them would hide the fact that the two measurements differ.
+    """
+    kept = tuple(cue for cue in cues if cue.span.start_s < duration_s)
+    clamped = tuple(
+        cue
+        if cue.span.end_s <= duration_s
+        else replace(cue, span=TimeSpan(cue.span.start_s, duration_s))
+        for cue in kept
+    )
+    return clamped, len(cues) - len(kept)
 
 
 class AudioHandler:
@@ -382,6 +409,23 @@ class AudioHandler:
                 detail=f"the transcriber could not transcribe the audio ({exc})",
                 span=TimeSpan(0.0, facts.duration_s),
             )
+        cues, dropped = _clamp_to_duration(cues, facts.duration_s)
+        if dropped and not cues:
+            return self._nothing_to_read(
+                ref,
+                budget,
+                summary=(
+                    f"{self._summary(ref, facts)} Transcribed, and every cue fell "
+                    f"outside the file's measured duration."
+                ),
+                what="transcript outside the file",
+                detail=(
+                    f"the transcriber returned {dropped} cue(s), all of them starting at or "
+                    f"after the probed duration of {facts.duration_s:g}s; none of them could "
+                    "be placed on this file's timeline"
+                ),
+                span=TimeSpan(0.0, facts.duration_s),
+            )
         if not cues:
             # Deliberately NOT the same rendering as an absent transcriber.
             # A transcriber that ran and heard nothing says this file is
@@ -398,7 +442,21 @@ class AudioHandler:
                 ),
                 span=TimeSpan(0.0, facts.duration_s),
             )
-        return self._fit(*self._flatten(cues, facts.duration_s), budget, ())
+        degradations = (
+            (
+                Degradation(
+                    what="cues outside the file",
+                    detail=(
+                        f"{dropped} cue(s) started at or after the probed duration of "
+                        f"{facts.duration_s:g}s and were dropped; the transcriber and the "
+                        "probe disagree about how long this file is"
+                    ),
+                ),
+            )
+            if dropped
+            else ()
+        )
+        return self._fit(*self._flatten(cues, facts.duration_s), budget, degradations)
 
     def _flatten(
         self, cues: tuple[TranscriptCue, ...], duration_s: float
