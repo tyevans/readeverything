@@ -17,12 +17,22 @@ if TYPE_CHECKING:
     from readeverything.adapters.artifact_store import (
         InMemoryArtifactStore as InMemoryArtifactStore,
     )
+    from readeverything.adapters.binary_probe import BinaryProbe as BinaryProbe
     from readeverything.adapters.detection import PuremagicDetector as PuremagicDetector
     from readeverything.adapters.hashing import ContentHasher as ContentHasher
     from readeverything.adapters.hashing import StatMemo as StatMemo
     from readeverything.adapters.local_source import LocalFileSource as LocalFileSource
+    from readeverything.adapters.model_probe import ModelProbe as ModelProbe
+    from readeverything.adapters.probing import discover as discover
+    from readeverything.adapters.vision_langchain import (
+        LangChainVisionModel as LangChainVisionModel,
+    )
+    from readeverything.adapters.vision_langchain import (
+        build_openai_vision_model as build_openai_vision_model,
+    )
     from readeverything.agent.results import ToolResult as ToolResult
     from readeverything.agent.tools import build_tools as build_tools
+    from readeverything.composition import build_perception as build_perception
     from readeverything.domain.affordance import Affordance as Affordance
     from readeverything.domain.affordance import DetailLevel as DetailLevel
     from readeverything.domain.capability import Capability as Capability
@@ -61,10 +71,12 @@ if TYPE_CHECKING:
     from readeverything.handlers.image import ImageHandler as ImageHandler
     from readeverything.handlers.text import TextHandler as TextHandler
     from readeverything.pipeline.perception import Perception as Perception
+    from readeverything.pipeline.resolution import ResolutionMemo as ResolutionMemo
     from readeverything.ports.artifacts import ArtifactStore as ArtifactStore
     from readeverything.ports.detection import MimeDetector as MimeDetector
     from readeverything.ports.handler import MediaHandler as MediaHandler
     from readeverything.ports.hashing import ContentHashing as ContentHashing
+    from readeverything.ports.probe import CapabilityProbe as CapabilityProbe
     from readeverything.ports.source import FileSource as FileSource
     from readeverything.ports.source import SourceReader as SourceReader
     from readeverything.ports.vision import VisionModel as VisionModel
@@ -88,9 +100,11 @@ _LAZY: dict[str, str] = {
     "ArtifactStoreCompliance": "readeverything.testing.artifact_compliance",
     "BBox": "readeverything.domain.locators",
     "BinaryHandler": "readeverything.handlers.binary",
+    "BinaryProbe": "readeverything.adapters.binary_probe",
     "Budget": "readeverything.domain.rendition",
     "ByteRange": "readeverything.domain.locators",
     "Capability": "readeverything.domain.capability",
+    "CapabilityProbe": "readeverything.ports.probe",
     "CapabilitySet": "readeverything.domain.capability",
     "CapabilityUnavailableError": "readeverything.domain.errors",
     "Card": "readeverything.domain.card",
@@ -112,6 +126,7 @@ _LAZY: dict[str, str] = {
     "ImageHandler": "readeverything.handlers.image",
     "InMemoryArtifactStore": "readeverything.adapters.artifact_store",
     "InfrastructureError": "readeverything.domain.errors",
+    "LangChainVisionModel": "readeverything.adapters.vision_langchain",
     "LocalFileSource": "readeverything.adapters.local_source",
     "LocatorMap": "readeverything.domain.locator_map",
     "LocatorSegment": "readeverything.domain.locator_map",
@@ -121,6 +136,7 @@ _LAZY: dict[str, str] = {
     "MimeDetector": "readeverything.ports.detection",
     "MimeType": "readeverything.domain.identity",
     "MimeTypeRegistry": "readeverything.registry.registry",
+    "ModelProbe": "readeverything.adapters.model_probe",
     "NoHandlerError": "readeverything.registry.registry",
     "PageRef": "readeverything.domain.locators",
     "Perception": "readeverything.pipeline.perception",
@@ -128,6 +144,7 @@ _LAZY: dict[str, str] = {
     "ReadEverythingError": "readeverything.domain.errors",
     "Rendered": "readeverything.domain.rendition",
     "Rendition": "readeverything.domain.rendition",
+    "ResolutionMemo": "readeverything.pipeline.resolution",
     "Segment": "readeverything.domain.card",
     "SourceReader": "readeverything.ports.source",
     "SourceRef": "readeverything.domain.identity",
@@ -142,7 +159,10 @@ _LAZY: dict[str, str] = {
     "TranscriptCue": "readeverything.domain.rendition",
     "UnknownAffordanceError": "readeverything.domain.errors",
     "VisionModel": "readeverything.ports.vision",
+    "build_openai_vision_model": "readeverything.adapters.vision_langchain",
+    "build_perception": "readeverything.composition",
     "build_tools": "readeverything.agent.tools",
+    "discover": "readeverything.adapters.probing",
 }
 
 __all__ = sorted(_LAZY)

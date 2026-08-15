@@ -53,6 +53,11 @@ class Perception:
         self._artifacts = artifacts
         self._memo = memo
 
+    @property
+    def registry(self) -> MimeTypeRegistry:
+        """The registry this perception dispatches through."""
+        return self._registry
+
     async def _ref(self, uri: str) -> SourceRef:
         key = None if self._memo is None else await stat_key(self._source, uri)
         if self._memo is not None:

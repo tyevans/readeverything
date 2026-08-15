@@ -81,6 +81,7 @@ type = "layers"
 containers = ["readeverything"]
 exhaustive = true
 layers = [
+    "composition",
     "testing",
     "agent",
     "pipeline",
