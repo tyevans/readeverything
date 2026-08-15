@@ -3099,6 +3099,19 @@ async def test_read_range_clamps_to_the_end_of_the_text() -> None:
     assert rendition.content.text == "amma\n"
 
 
+async def test_read_range_on_an_empty_file_raises_a_domain_error() -> None:
+    """An empty file has no character range; say so rather than invent one."""
+    handler = TextHandler(source=FakeSource({"empty.txt": b""}))
+    ref = SourceRef(
+        uri="empty.txt",
+        mime=MimeType.parse("text/plain"),
+        content_hash=ContentHash("d" * 64),
+        size_bytes=0,
+    )
+    with pytest.raises(DomainError, match="empty"):
+        await handler.invoke(ref, "read_range", ReadRangeParams(start=0, end=5))
+
+
 async def test_an_unknown_affordance_raises() -> None:
     with pytest.raises(UnknownAffordanceError, match="read_range"):
         await _handler().invoke(_ref(), "nope", ReadRangeParams(start=0, end=1))
@@ -3221,7 +3234,7 @@ from pydantic import BaseModel, Field
 from readeverything.domain.affordance import Affordance, DetailLevel
 from readeverything.domain.capability import Capability
 from readeverything.domain.card import Card, Segment
-from readeverything.domain.errors import UnknownAffordanceError
+from readeverything.domain.errors import DomainError, UnknownAffordanceError
 from readeverything.domain.identity import MediaKind, SourceRef
 from readeverything.domain.locator_map import LocatorMap, LocatorSegment
 from readeverything.domain.locators import CharSpan
@@ -3301,12 +3314,19 @@ class TextHandler:
     async def invoke(self, ref: SourceRef, name: str, params: BaseModel) -> Rendition:
         if name != "read_range":
             raise UnknownAffordanceError(name, (a.name for a in self.affordances()))
-        assert isinstance(params, ReadRangeParams)
+        if not isinstance(params, ReadRangeParams):
+            # Not an `assert`: bandit's B101 skip is scoped to the testing
+            # package, and `python -O` would strip the check entirely.
+            raise TypeError(f"expected ReadRangeParams, got {type(params).__name__}")
         text, _ = await self._text(ref)
-        start = min(params.start, max(0, len(text) - 1))
+        if not text:
+            # Every Rendition must carry a locator and there is no honest one
+            # for a zero-length file: CharSpan(0, 0) raises by construction.
+            raise DomainError(f"{ref.uri} is empty; there is no character range to read")
+        start = min(params.start, len(text) - 1)
         end = min(params.end, len(text))
         if start >= end:
-            start, end = 0, min(1, len(text))
+            start, end = 0, 1
         return Rendition(locator=CharSpan(start, end), content=TextContent(text[start:end]))
 
     async def represent(self, ref: SourceRef, budget: Budget) -> Rendered:
@@ -3422,7 +3442,8 @@ class BinaryHandler:
     async def invoke(self, ref: SourceRef, name: str, params: BaseModel) -> Rendition:
         if name != "hexdump":
             raise UnknownAffordanceError(name, (a.name for a in self.affordances()))
-        assert isinstance(params, HexdumpParams)
+        if not isinstance(params, HexdumpParams):
+            raise TypeError(f"expected HexdumpParams, got {type(params).__name__}")
         end = params.start + params.length
         data = await self._source.read_range(ref.uri, params.start, end)
         actual_end = params.start + len(data)
