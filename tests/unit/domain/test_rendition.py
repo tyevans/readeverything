@@ -1,0 +1,51 @@
+import pytest
+
+from readeverything.domain.locator_map import LocatorMap, LocatorSegment
+from readeverything.domain.locators import CharSpan, TimeSpan
+from readeverything.domain.rendition import (
+    Budget,
+    Degradation,
+    Rendered,
+    Rendition,
+    TextContent,
+    TranscriptCue,
+)
+
+
+def test_a_rendition_carries_its_locator() -> None:
+    rendition = Rendition(locator=TimeSpan(1.0, 2.0), content=TextContent("hello"))
+    assert rendition.locator == TimeSpan(1.0, 2.0)
+    assert not rendition.degraded
+
+
+def test_a_transcript_cue_may_have_no_speaker() -> None:
+    """Diarization is capability-gated; every cue works without it."""
+    cue = TranscriptCue(span=TimeSpan(0.0, 1.0), text="hi", speaker=None, confidence=None)
+    assert cue.speaker is None
+
+
+def test_rendered_requires_barriers_to_lie_within_the_text() -> None:
+    locator_map = LocatorMap.build((LocatorSegment(CharSpan(0, 5), TimeSpan(0.0, 1.0)),))
+    with pytest.raises(ValueError, match="barrier"):
+        Rendered(
+            text="hello",
+            locator_map=locator_map,
+            barriers=(99,),
+            degradations=(),
+        )
+
+
+def test_rendered_requires_the_map_to_cover_the_text() -> None:
+    locator_map = LocatorMap.build((LocatorSegment(CharSpan(0, 3), TimeSpan(0.0, 1.0)),))
+    with pytest.raises(ValueError, match="must cover the text"):
+        Rendered(text="hello", locator_map=locator_map, barriers=(), degradations=())
+
+
+def test_a_budget_of_none_means_unbounded() -> None:
+    assert Budget(max_chars=None).permits(10_000_000)
+    assert not Budget(max_chars=100).permits(101)
+
+
+def test_a_degradation_says_what_was_dropped() -> None:
+    d = Degradation(what="frame_sampling", detail="reduced to 1 frame per 30s")
+    assert "30s" in d.detail
