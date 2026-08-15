@@ -30,6 +30,7 @@ here imports an adapter.
 
 from __future__ import annotations
 
+import time
 from typing import ClassVar
 
 from pydantic import BaseModel, Field
@@ -41,6 +42,11 @@ from readeverything.domain.errors import UnknownAffordanceError
 from readeverything.domain.identity import MediaKind, SourceRef
 from readeverything.domain.locator_map import LocatorMap, LocatorSegment
 from readeverything.domain.locators import ByteRange, CharSpan, TimeSpan
+from readeverything.domain.observation import (
+    OperationFinished,
+    OperationProgressed,
+    OperationStarted,
+)
 from readeverything.domain.rendition import (
     Budget,
     Degradation,
@@ -51,9 +57,13 @@ from readeverything.domain.rendition import (
 )
 from readeverything.domain.timeline import clamp_cues_to_duration, tile
 from readeverything.ports.audio import AudioExtractor
+from readeverything.ports.observation import Observer, emit
 from readeverything.ports.source import SourceReader
 from readeverything.ports.streams import MediaFacts, StreamProbe
 from readeverything.ports.transcription import Transcriber
+
+#: What `represent` calls itself when it narrates.
+_OPERATION = "represent"
 
 #: The mimetype handed to the transcriber. `AudioExtractor.extract` is
 #: specified to return mono 16kHz WAV bytes whatever the container was, so
@@ -125,11 +135,13 @@ class AudioHandler:
         probe: StreamProbe,
         audio: AudioExtractor,
         transcriber: Transcriber | None = None,
+        observer: Observer | None = None,
     ) -> None:
         self._source = source
         self._probe = probe
         self._audio = audio
         self._transcriber = transcriber
+        self._observer = observer
 
     def requires(self) -> frozenset[Capability]:
         return frozenset({Capability.FFMPEG})
@@ -281,6 +293,27 @@ class AudioHandler:
         )
 
     async def represent(self, ref: SourceRef, budget: Budget) -> Rendered:
+        """Narrated from end to end, including the paths that transcribe nothing.
+
+        `OperationFinished` is reported in a `finally` and its `elapsed_s` is
+        measured rather than estimated, matching `VideoHandler.represent`.
+        Transcription happens in ONE call, so there is no per-call progress to
+        report during it — `OperationProgressed` fires per cue while the
+        timeline is assembled afterward, when the cue count is finally known.
+        """
+        emit(self._observer, OperationStarted(operation=_OPERATION, ref=ref))
+        started = time.perf_counter()
+        try:
+            return await self._represent(ref, budget)
+        finally:
+            emit(
+                self._observer,
+                OperationFinished(
+                    operation=_OPERATION, ref=ref, elapsed_s=time.perf_counter() - started
+                ),
+            )
+
+    async def _represent(self, ref: SourceRef, budget: Budget) -> Rendered:
         facts, path = await self._facts(ref)
         if facts is None or path is None:
             return self._nothing_to_read(
@@ -405,15 +438,25 @@ class AudioHandler:
             if dropped
             else ()
         )
-        return self._fit(*self._flatten(cues, facts.duration_s), budget, degradations)
+        return self._fit(*self._flatten(ref, cues, facts.duration_s), budget, degradations)
 
     def _flatten(
-        self, cues: tuple[TranscriptCue, ...], duration_s: float
+        self, ref: SourceRef, cues: tuple[TranscriptCue, ...], duration_s: float
     ) -> tuple[str, tuple[LocatorSegment, ...]]:
+        """The transcript as text and locators, one `OperationProgressed` per cue.
+
+        `total` is `len(cues)` here, not `None` — by the time this runs,
+        `transcribe()` has already returned, so the cue count is exactly the
+        thing that WAS unknown before it did. There is no earlier point at
+        which a partial count could be reported honestly.
+        """
+        total = len(cues)
         chunks: list[str] = []
         segments: list[LocatorSegment] = []
         cursor = 0
-        for cue, (start, end) in zip(cues, _cue_bounds(cues, duration_s), strict=True):
+        for done, (cue, (start, end)) in enumerate(
+            zip(cues, _cue_bounds(cues, duration_s), strict=True), start=1
+        ):
             body = " ".join(cue.text.split())
             speaker = f"{cue.speaker} " if cue.speaker is not None else ""
             chunk = f"[{_timestamp(start)}] {speaker}{body}{CUE_SEPARATOR}"
@@ -422,6 +465,10 @@ class AudioHandler:
             )
             cursor += len(chunk)
             chunks.append(chunk)
+            emit(
+                self._observer,
+                OperationProgressed(operation=_OPERATION, ref=ref, done=done, total=total),
+            )
         return "".join(chunks), tuple(segments)
 
     def _nothing_to_read(
