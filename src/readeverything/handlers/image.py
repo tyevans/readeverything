@@ -80,6 +80,12 @@ class CropParams(RegionParams):
     """The whole-image crop affordance's params. Coordinates come from `RegionParams`."""
 
 
+class AskAboutImageParams(RegionParams):
+    """A free-form question about the whole image, or a region of it."""
+
+    question: str = Field(description="What you want to know about the image.")
+
+
 class ImageHandler:
     """Reads raster images, and describes them when a vision model is present."""
 
@@ -128,6 +134,19 @@ class ImageHandler:
                 name="ocr",
                 description="Transcribe text visible in the image.",
                 params=OcrParams,
+                requires=frozenset({Capability.VISION}),
+                level=DetailLevel.DEEP,
+            ),
+            Affordance(
+                name="ask_about_image",
+                description=(
+                    "Ask a vision model a question about this image, or about a "
+                    "rectangular region of it. Give x/y/w/h as fractions 0-1 to ask "
+                    "about part of it; omit them to ask about the whole image. "
+                    "Asking about a region costs the same as asking about the whole "
+                    "image — use it to be precise, not to save."
+                ),
+                params=AskAboutImageParams,
                 requires=frozenset({Capability.VISION}),
                 level=DetailLevel.DEEP,
             ),
@@ -208,6 +227,26 @@ class ImageHandler:
                     raise TypeError(f"expected OcrParams, got {type(params).__name__}")
                 text = await self._see(ref, _OCR_PROMPT, "ocr")
                 return Rendition(locator=WHOLE_IMAGE, content=TextContent(text))
+            case "ask_about_image":
+                if not isinstance(params, AskAboutImageParams):
+                    raise TypeError(f"expected AskAboutImageParams, got {type(params).__name__}")
+                if self._vision is None:
+                    raise UnknownAffordanceError(
+                        "ask_about_image", (a.name for a in self.affordances())
+                    )
+                if params.is_whole_frame:
+                    text = await self._see(ref, params.question, "ask_about_image")
+                else:
+                    image = await self._require_image(ref)
+                    cropped = crop_to_region(image, params)
+                    text = await self._vision.describe(cropped, "image/png", params.question)
+                    if not text.strip():
+                        # Same guard as `_see`: an empty completion is a failure,
+                        # not an answer, and must not reach the caller as text.
+                        raise InfrastructureError(
+                            f"vision model returned no description for {ref.uri}"
+                        )
+                return Rendition(locator=region_bbox(params), content=TextContent(text))
             case _:
                 raise UnknownAffordanceError(name, (a.name for a in self.affordances()))
 

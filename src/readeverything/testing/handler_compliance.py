@@ -7,6 +7,7 @@ These are the same bodies the bundled handlers are tested against.
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from readeverything.domain.identity import ContentHash, MediaKind, MimeType, SourceRef
 from readeverything.domain.rendition import Budget
@@ -62,14 +63,20 @@ class MediaHandlerCompliance:
         assert isinstance(card.kind, MediaKind)
 
     async def test_declared_affordances_are_invocable(self, handler, content, ref) -> None:  # type: ignore[no-untyped-def]
-        """Every declared affordance can be invoked with default parameters.
+        """Every zero-argument affordance can be invoked with default parameters.
 
         Drift between what a handler declares and what it implements would make
         capability negotiation a lie: the registry would expose a tool that
-        cannot run.
+        cannot run. Some affordances take a required, caller-supplied parameter
+        with no sensible default (a free-form question, say); those cannot be
+        constructed with no arguments at all, so this law skips them rather than
+        asserting a default that would defeat the point of requiring the field.
         """
         for affordance in handler.affordances():
-            params = affordance.params()
+            try:
+                params = affordance.params()
+            except ValidationError:
+                continue
             await handler.invoke(ref, affordance.name, params)
 
     async def test_an_undeclared_affordance_raises(self, handler, ref) -> None:  # type: ignore[no-untyped-def]
