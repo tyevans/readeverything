@@ -23,12 +23,16 @@ if TYPE_CHECKING:
     from readeverything.adapters.hashing import StatMemo as StatMemo
     from readeverything.adapters.local_source import LocalFileSource as LocalFileSource
     from readeverything.adapters.model_probe import ModelProbe as ModelProbe
+    from readeverything.adapters.pdfium_probe import PdfiumProbe as PdfiumProbe
     from readeverything.adapters.probing import discover as discover
     from readeverything.adapters.vision_langchain import (
         LangChainVisionModel as LangChainVisionModel,
     )
     from readeverything.adapters.vision_langchain import (
         build_openai_vision_model as build_openai_vision_model,
+    )
+    from readeverything.adapters.vision_recognizer import (
+        VisionTextRecognizer as VisionTextRecognizer,
     )
     from readeverything.agent.results import ToolResult as ToolResult
     from readeverything.agent.tools import build_tools as build_tools
@@ -69,6 +73,7 @@ if TYPE_CHECKING:
     from readeverything.domain.rendition import TranscriptCue as TranscriptCue
     from readeverything.handlers.binary import BinaryHandler as BinaryHandler
     from readeverything.handlers.image import ImageHandler as ImageHandler
+    from readeverything.handlers.pdf import PdfHandler as PdfHandler
     from readeverything.handlers.text import TextHandler as TextHandler
     from readeverything.pipeline.perception import Perception as Perception
     from readeverything.pipeline.resolution import ResolutionMemo as ResolutionMemo
@@ -77,6 +82,9 @@ if TYPE_CHECKING:
     from readeverything.ports.handler import MediaHandler as MediaHandler
     from readeverything.ports.hashing import ContentHashing as ContentHashing
     from readeverything.ports.probe import CapabilityProbe as CapabilityProbe
+    from readeverything.ports.probe_media import DocumentFacts as DocumentFacts
+    from readeverything.ports.probe_media import MediaProbe as MediaProbe
+    from readeverything.ports.recognition import TextRecognizer as TextRecognizer
     from readeverything.ports.source import FileSource as FileSource
     from readeverything.ports.source import SourceReader as SourceReader
     from readeverything.ports.vision import VisionModel as VisionModel
@@ -114,6 +122,7 @@ _LAZY: dict[str, str] = {
     "ContentHashing": "readeverything.ports.hashing",
     "Degradation": "readeverything.domain.rendition",
     "DetailLevel": "readeverything.domain.affordance",
+    "DocumentFacts": "readeverything.ports.probe_media",
     "DomainError": "readeverything.domain.errors",
     "FakeDiarizer": "readeverything.testing.fakes",
     "FakeSource": "readeverything.testing.fakes",
@@ -133,12 +142,15 @@ _LAZY: dict[str, str] = {
     "MediaHandler": "readeverything.ports.handler",
     "MediaHandlerCompliance": "readeverything.testing.handler_compliance",
     "MediaKind": "readeverything.domain.identity",
+    "MediaProbe": "readeverything.ports.probe_media",
     "MimeDetector": "readeverything.ports.detection",
     "MimeType": "readeverything.domain.identity",
     "MimeTypeRegistry": "readeverything.registry.registry",
     "ModelProbe": "readeverything.adapters.model_probe",
     "NoHandlerError": "readeverything.registry.registry",
     "PageRef": "readeverything.domain.locators",
+    "PdfHandler": "readeverything.handlers.pdf",
+    "PdfiumProbe": "readeverything.adapters.pdfium_probe",
     "Perception": "readeverything.pipeline.perception",
     "PuremagicDetector": "readeverything.adapters.detection",
     "ReadEverythingError": "readeverything.domain.errors",
@@ -154,11 +166,13 @@ _LAZY: dict[str, str] = {
     "StructuredContent": "readeverything.domain.rendition",
     "TextContent": "readeverything.domain.rendition",
     "TextHandler": "readeverything.handlers.text",
+    "TextRecognizer": "readeverything.ports.recognition",
     "TimeSpan": "readeverything.domain.locators",
     "ToolResult": "readeverything.agent.results",
     "TranscriptCue": "readeverything.domain.rendition",
     "UnknownAffordanceError": "readeverything.domain.errors",
     "VisionModel": "readeverything.ports.vision",
+    "VisionTextRecognizer": "readeverything.adapters.vision_recognizer",
     "build_openai_vision_model": "readeverything.adapters.vision_langchain",
     "build_perception": "readeverything.composition",
     "build_tools": "readeverything.agent.tools",

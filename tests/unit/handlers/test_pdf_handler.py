@@ -1,5 +1,5 @@
 import pytest
-from tests.fixtures_pdf import blank, born_digital, many_pages, scanned_like
+from tests.fixtures_pdf import blank, born_digital, many_pages, mixed, scanned_like
 
 from readeverything.adapters.pdfium_probe import PdfiumProbe
 from readeverything.adapters.vision_recognizer import VisionTextRecognizer
@@ -57,6 +57,34 @@ async def test_every_character_resolves_to_the_page_it_came_from() -> None:
         assert rendered.locator_map.resolve(offset) == PageRef(page_number)
         # and the LAST character of that word, which is where an off-by-one shows
         assert rendered.locator_map.resolve(offset + len(word) - 1) == PageRef(page_number)
+
+
+async def test_a_document_with_an_empty_middle_page_still_maps_every_character() -> None:
+    """The case the page separator exists for.
+
+    A page whose text layer is empty owns no characters of its own. Without the
+    trailing separator its CharSpan would be zero-width, which CharSpan rejects,
+    and the whole document would fail to render because of one blank page in
+    the middle.
+    """
+    handler = _handler(mixed(["Alpha.", None, "Charlie."]))
+    rendered = await handler.represent(_ref(), Budget(max_chars=None))
+
+    assert rendered.locator_map.length == len(rendered.text)
+    assert len(rendered.locator_map.segments) == 3
+    assert rendered.locator_map.resolve(rendered.text.index("Alpha")) == PageRef(1)
+    assert rendered.locator_map.resolve(rendered.text.index("Charlie")) == PageRef(3)
+    # the middle page still resolves — to page 2, over its separator alone
+    middle = rendered.barriers[0]
+    assert rendered.locator_map.resolve(middle) == PageRef(2)
+
+
+async def test_an_empty_first_page_and_an_empty_last_page_both_map() -> None:
+    """The other two positions a naive implementation gets wrong."""
+    for pages in (["Alpha.", None], [None, "Charlie."]):
+        rendered = await _handler(mixed(pages)).represent(_ref(), Budget(max_chars=None))
+        assert rendered.locator_map.length == len(rendered.text)
+        assert len(rendered.locator_map.segments) == 2
 
 
 async def test_barriers_sit_at_page_breaks() -> None:

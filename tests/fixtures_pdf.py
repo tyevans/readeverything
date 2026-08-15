@@ -60,3 +60,24 @@ def blank(pages: int = 1) -> bytes:
 def many_pages(count: int) -> bytes:
     """For asserting the locator map's size and the barrier count."""
     return born_digital([f"This is page {i + 1}." for i in range(count)])
+
+
+def mixed(pages: Sequence[str | None]) -> bytes:
+    """Pages that alternate between real text and no text layer.
+
+    `None` draws an image and no text — a scanned page. A string draws that
+    string. This is the adversarial shape for the locator map: an empty page
+    between two full ones must still own at least one character, or its
+    CharSpan is zero-width and raises.
+    """
+    image = Image.new("RGB", (400, 200), (30, 30, 30))
+    buffer = io.BytesIO()
+    pdf = canvas.Canvas(buffer, pagesize=LETTER)
+    for text in pages:
+        if text is None:
+            pdf.drawImage(ImageReader(image), 72, 500, width=300, height=150)
+        else:
+            pdf.drawString(72, 720, text)
+        pdf.showPage()
+    pdf.save()
+    return buffer.getvalue()
