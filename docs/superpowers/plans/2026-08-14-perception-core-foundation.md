@@ -2004,7 +2004,7 @@ class MimeTypeRegistry:
 - [ ] **Step 4: Run the tests**
 
 Run: `uv run pytest tests/unit/registry -v && uv run mypy`
-Expected: 16 passed, mypy clean
+Expected: 15 passed (7 pattern tests + 8 registry tests), mypy clean
 
 - [ ] **Step 5: Commit**
 
