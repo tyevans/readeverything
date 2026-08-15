@@ -63,6 +63,7 @@ if TYPE_CHECKING:
     from readeverything.ports.artifacts import ArtifactStore as ArtifactStore
     from readeverything.ports.detection import MimeDetector as MimeDetector
     from readeverything.ports.handler import MediaHandler as MediaHandler
+    from readeverything.ports.hashing import ContentHashing as ContentHashing
     from readeverything.ports.source import FileSource as FileSource
     from readeverything.ports.source import SourceReader as SourceReader
     from readeverything.registry.registry import MimeTypeRegistry as MimeTypeRegistry
@@ -93,6 +94,7 @@ _LAZY: dict[str, str] = {
     "CharSpan": "readeverything.domain.locators",
     "ContentHash": "readeverything.domain.identity",
     "ContentHasher": "readeverything.adapters.hashing",
+    "ContentHashing": "readeverything.ports.hashing",
     "Degradation": "readeverything.domain.rendition",
     "DetailLevel": "readeverything.domain.affordance",
     "DomainError": "readeverything.domain.errors",
