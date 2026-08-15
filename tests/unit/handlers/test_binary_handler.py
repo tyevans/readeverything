@@ -44,6 +44,23 @@ async def test_represent_describes_rather_than_dumping() -> None:
     assert rendered.locator_map.length == len(rendered.text)
 
 
+@pytest.mark.parametrize("max_chars", [0, 1, 5, 10])
+async def test_the_truncation_degradation_reports_the_characters_actually_kept(
+    max_chars: int,
+) -> None:
+    """The rendition and its own degradation must not contradict each other.
+
+    The third handler with this shape. A zero-width rendition is inexpressible
+    — `CharSpan(0, 0)` raises — so a budget of zero still keeps one character.
+    The degradation reported the budget instead, claiming "kept 0" of text that
+    was one character long. The spec recorded this case as correct by trace;
+    the trace was right that a character comes back and wrong that the count
+    announcing it was true.
+    """
+    rendered = await _handler().represent(_ref(), Budget(max_chars=max_chars))
+    assert rendered.degradations[0].detail.startswith(f"kept {len(rendered.text)} of ")
+
+
 class TestBinaryHandlerCompliance(MediaHandlerCompliance):
     @pytest.fixture
     def handler(self) -> BinaryHandler:
