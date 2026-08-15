@@ -132,6 +132,14 @@ The model receives only the requested rectangle. It is never sent a whole frame
 with a described sub-area, which would ask it to do the cropping in prose and
 make the locator a claim rather than a fact.
 
+**Video is the exception.** The domain has no composite locator, so "this
+rectangle at this second" is inexpressible: `ask_about_image` on a video
+returns a `TimeSpan`, and the region narrows what the model sees without
+appearing in the locator. Adding a composite locator would touch `LocatorMap`
+and every consumer of it, which is a larger change than this one and is not
+attempted here. The video affordance's description says so, so an agent is not
+misled about what the locator means.
+
 Omitting `region` means the whole image, so the common case stays
 `ask_about_image(uri, question)` with nothing else to fill in.
 
