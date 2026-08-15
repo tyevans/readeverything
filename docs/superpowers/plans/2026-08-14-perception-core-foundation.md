@@ -2526,6 +2526,18 @@ async def test_binary_content_survives(store) -> None:  # type: ignore[no-untype
     assert await store.get("k") == bytes(range(256))
 
 
+async def test_concurrent_writers_do_not_share_a_temp_file(tmp_path: Path) -> None:
+    """Two writers of the same key must not collide on one .partial file.
+
+    The rglob assertion is the load-bearing half: it proves no temp file was
+    orphaned by a writer that lost the race.
+    """
+    fs = FilesystemArtifactStore(root=tmp_path)
+    await asyncio.gather(*(fs.put("k", b"value") for _ in range(8)))
+    assert await fs.get("k") == b"value"
+    assert not list(tmp_path.rglob("*.partial"))
+
+
 async def test_a_key_with_path_characters_is_stored_safely(tmp_path: Path) -> None:
     """A key must never be able to escape the store's root."""
     fs = FilesystemArtifactStore(root=tmp_path)
@@ -2615,6 +2627,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from pathlib import Path
+from uuid import uuid4
 
 
 class InMemoryArtifactStore:
@@ -2659,8 +2672,11 @@ class FilesystemArtifactStore:
                 return
             path.parent.mkdir(parents=True, exist_ok=True)
             # Write-then-rename so a crash cannot leave a truncated artifact
-            # that later reads as a valid cache hit.
-            temporary = path.with_suffix(".partial")
+            # that later reads as a valid cache hit. The temp name is unique
+            # per call, not per key: two workers deriving the same artifact
+            # concurrently is the normal case, and a shared temp file would
+            # let one writer's bytes be replaced by the other's mid-write.
+            temporary = path.with_suffix(f".{uuid4().hex}.partial")
             temporary.write_bytes(value)
             temporary.replace(path)
 
