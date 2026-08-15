@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     from readeverything.adapters.model_probe import ModelProbe as ModelProbe
     from readeverything.adapters.pdfium_probe import PdfiumProbe as PdfiumProbe
     from readeverything.adapters.probing import discover as discover
+    from readeverything.adapters.semaphore_limiter import SemaphoreLimiter as SemaphoreLimiter
     from readeverything.adapters.vision_langchain import (
         LangChainVisionModel as LangChainVisionModel,
     )
@@ -66,6 +67,10 @@ if TYPE_CHECKING:
     from readeverything.domain.locators import CharSpan as CharSpan
     from readeverything.domain.locators import PageRef as PageRef
     from readeverything.domain.locators import TimeSpan as TimeSpan
+    from readeverything.domain.observation import Event as Event
+    from readeverything.domain.observation import OperationFinished as OperationFinished
+    from readeverything.domain.observation import OperationProgressed as OperationProgressed
+    from readeverything.domain.observation import OperationStarted as OperationStarted
     from readeverything.domain.rendition import Budget as Budget
     from readeverything.domain.rendition import Degradation as Degradation
     from readeverything.domain.rendition import ImageContent as ImageContent
@@ -88,6 +93,8 @@ if TYPE_CHECKING:
     from readeverything.ports.detection import MimeDetector as MimeDetector
     from readeverything.ports.handler import MediaHandler as MediaHandler
     from readeverything.ports.hashing import ContentHashing as ContentHashing
+    from readeverything.ports.limits import Limiter as Limiter
+    from readeverything.ports.observation import Observer as Observer
     from readeverything.ports.probe import CapabilityProbe as CapabilityProbe
     from readeverything.ports.probe_media import DocumentFacts as DocumentFacts
     from readeverything.ports.probe_media import MediaProbe as MediaProbe
@@ -101,11 +108,14 @@ if TYPE_CHECKING:
     from readeverything.testing.artifact_compliance import (
         ArtifactStoreCompliance as ArtifactStoreCompliance,
     )
+    from readeverything.testing.fakes import CountingLimiter as CountingLimiter
     from readeverything.testing.fakes import FakeDiarizer as FakeDiarizer
     from readeverything.testing.fakes import FakeSource as FakeSource
     from readeverything.testing.fakes import FakeTranscriber as FakeTranscriber
     from readeverything.testing.fakes import FakeVision as FakeVision
     from readeverything.testing.fakes import FakeVisionRefusing as FakeVisionRefusing
+    from readeverything.testing.fakes import RaisingObserver as RaisingObserver
+    from readeverything.testing.fakes import RecordingObserver as RecordingObserver
     from readeverything.testing.handler_compliance import (
         MediaHandlerCompliance as MediaHandlerCompliance,
     )
@@ -130,10 +140,12 @@ _LAZY: dict[str, str] = {
     "ContentHash": "readeverything.domain.identity",
     "ContentHasher": "readeverything.adapters.hashing",
     "ContentHashing": "readeverything.ports.hashing",
+    "CountingLimiter": "readeverything.testing.fakes",
     "Degradation": "readeverything.domain.rendition",
     "DetailLevel": "readeverything.domain.affordance",
     "DocumentFacts": "readeverything.ports.probe_media",
     "DomainError": "readeverything.domain.errors",
+    "Event": "readeverything.domain.observation",
     "FakeDiarizer": "readeverything.testing.fakes",
     "FakeSource": "readeverything.testing.fakes",
     "FakeTranscriber": "readeverything.testing.fakes",
@@ -147,6 +159,7 @@ _LAZY: dict[str, str] = {
     "InMemoryArtifactStore": "readeverything.adapters.artifact_store",
     "InfrastructureError": "readeverything.domain.errors",
     "LangChainVisionModel": "readeverything.adapters.vision_langchain",
+    "Limiter": "readeverything.ports.limits",
     "LocalFileSource": "readeverything.adapters.local_source",
     "LocatorMap": "readeverything.domain.locator_map",
     "LocatorSegment": "readeverything.domain.locator_map",
@@ -159,16 +172,23 @@ _LAZY: dict[str, str] = {
     "MimeTypeRegistry": "readeverything.registry.registry",
     "ModelProbe": "readeverything.adapters.model_probe",
     "NoHandlerError": "readeverything.registry.registry",
+    "Observer": "readeverything.ports.observation",
+    "OperationFinished": "readeverything.domain.observation",
+    "OperationProgressed": "readeverything.domain.observation",
+    "OperationStarted": "readeverything.domain.observation",
     "PageRef": "readeverything.domain.locators",
     "PdfHandler": "readeverything.handlers.pdf",
     "PdfiumProbe": "readeverything.adapters.pdfium_probe",
     "Perception": "readeverything.pipeline.perception",
     "PuremagicDetector": "readeverything.adapters.detection",
+    "RaisingObserver": "readeverything.testing.fakes",
     "ReadEverythingError": "readeverything.domain.errors",
+    "RecordingObserver": "readeverything.testing.fakes",
     "Rendered": "readeverything.domain.rendition",
     "Rendition": "readeverything.domain.rendition",
     "ResolutionMemo": "readeverything.pipeline.resolution",
     "Segment": "readeverything.domain.card",
+    "SemaphoreLimiter": "readeverything.adapters.semaphore_limiter",
     "SourceReader": "readeverything.ports.source",
     "SourceRef": "readeverything.domain.identity",
     "SourceUnreadableError": "readeverything.domain.errors",

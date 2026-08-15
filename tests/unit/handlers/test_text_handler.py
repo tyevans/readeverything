@@ -3,9 +3,10 @@ import pytest
 from readeverything.domain.errors import DomainError, UnknownAffordanceError
 from readeverything.domain.identity import ContentHash, MediaKind, MimeType, SourceRef
 from readeverything.domain.locators import CharSpan
+from readeverything.domain.observation import OperationFinished, OperationStarted
 from readeverything.domain.rendition import Budget, TextContent
 from readeverything.handlers.text import ReadRangeParams, TextHandler
-from readeverything.testing.fakes import FakeSource
+from readeverything.testing.fakes import FakeSource, RaisingObserver, RecordingObserver
 from readeverything.testing.handler_compliance import MediaHandlerCompliance
 
 CONTENT = b"alpha\nbeta\ngamma\n"
@@ -20,8 +21,11 @@ def _ref(*, uri: str = "a.txt", size_bytes: int = len(CONTENT)) -> SourceRef:
     )
 
 
-def _handler() -> TextHandler:
-    return TextHandler(source=FakeSource({"a.txt": CONTENT, "somewhere/else": CONTENT}))
+def _handler(*, observer: object | None = None) -> TextHandler:
+    return TextHandler(
+        source=FakeSource({"a.txt": CONTENT, "somewhere/else": CONTENT}),
+        observer=observer,  # type: ignore[arg-type]  # structural stub in tests
+    )
 
 
 async def test_the_card_reports_line_and_character_counts() -> None:
@@ -179,6 +183,37 @@ async def test_extracted_text_is_not_announced_as_synthesized() -> None:
     handler = TextHandler(source=FakeSource({"real.txt": b"actual file content"}))
     rendered = await handler.represent(_ref(uri="real.txt", size_bytes=19), Budget(max_chars=None))
     assert not any(d.what == "synthesized description" for d in rendered.degradations)
+
+
+async def test_represent_reports_started_and_finished_with_the_ref() -> None:
+    recorder = RecordingObserver()
+    ref = _ref()
+    await _handler(observer=recorder).represent(ref, Budget(max_chars=None))
+    kinds = [type(e).__name__ for e in recorder.events]
+    assert kinds == ["OperationStarted", "OperationFinished"]
+    started = recorder.events[0]
+    finished = recorder.events[1]
+    assert isinstance(started, OperationStarted)
+    assert isinstance(finished, OperationFinished)
+    assert started.ref == ref
+    assert finished.ref == ref
+    assert finished.elapsed_s >= 0.0
+
+
+async def test_attaching_an_observer_does_not_change_the_result() -> None:
+    """Unobserved output and observed output are the same `Rendered`."""
+    recorder = RecordingObserver()
+    unobserved = await _handler().represent(_ref(), Budget(max_chars=None))
+    observed = await _handler(observer=recorder).represent(_ref(), Budget(max_chars=None))
+    assert unobserved == observed
+    assert recorder.events, "the observed arm must actually have been observed"
+
+
+async def test_an_observer_that_raises_does_not_change_the_result() -> None:
+    """A read must not fail — or differ — because progress reporting failed."""
+    quiet = await _handler().represent(_ref(), Budget(max_chars=None))
+    noisy = await _handler(observer=RaisingObserver()).represent(_ref(), Budget(max_chars=None))
+    assert quiet == noisy
 
 
 class TestTextHandlerCompliance(MediaHandlerCompliance):

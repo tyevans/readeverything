@@ -1,9 +1,10 @@
 import pytest
 
 from readeverything.domain.identity import ContentHash, MediaKind, MimeType, SourceRef
+from readeverything.domain.observation import OperationFinished, OperationStarted
 from readeverything.domain.rendition import Budget, TextContent
 from readeverything.handlers.binary import BinaryHandler, HexdumpParams
-from readeverything.testing.fakes import FakeSource
+from readeverything.testing.fakes import FakeSource, RaisingObserver, RecordingObserver
 from readeverything.testing.handler_compliance import MediaHandlerCompliance
 
 CONTENT = bytes(range(64))
@@ -18,8 +19,11 @@ def _ref(*, uri: str = "blob.bin", size_bytes: int = len(CONTENT)) -> SourceRef:
     )
 
 
-def _handler() -> BinaryHandler:
-    return BinaryHandler(source=FakeSource({"blob.bin": CONTENT, "somewhere/else": CONTENT}))
+def _handler(*, observer: object | None = None) -> BinaryHandler:
+    return BinaryHandler(
+        source=FakeSource({"blob.bin": CONTENT, "somewhere/else": CONTENT}),
+        observer=observer,  # type: ignore[arg-type]  # structural stub in tests
+    )
 
 
 async def test_the_fallback_always_produces_a_card() -> None:
@@ -84,6 +88,37 @@ async def test_the_truncation_degradation_reports_the_characters_actually_kept(
     """
     rendered = await _handler().represent(_ref(), Budget(max_chars=max_chars))
     assert rendered.degradations[0].detail.startswith(f"kept {len(rendered.text)} of ")
+
+
+async def test_represent_reports_started_and_finished_with_the_ref() -> None:
+    recorder = RecordingObserver()
+    ref = _ref()
+    await _handler(observer=recorder).represent(ref, Budget(max_chars=None))
+    kinds = [type(e).__name__ for e in recorder.events]
+    assert kinds == ["OperationStarted", "OperationFinished"]
+    started = recorder.events[0]
+    finished = recorder.events[1]
+    assert isinstance(started, OperationStarted)
+    assert isinstance(finished, OperationFinished)
+    assert started.ref == ref
+    assert finished.ref == ref
+    assert finished.elapsed_s >= 0.0
+
+
+async def test_attaching_an_observer_does_not_change_the_result() -> None:
+    """Unobserved output and observed output are the same `Rendered`."""
+    recorder = RecordingObserver()
+    unobserved = await _handler().represent(_ref(), Budget(max_chars=None))
+    observed = await _handler(observer=recorder).represent(_ref(), Budget(max_chars=None))
+    assert unobserved == observed
+    assert recorder.events, "the observed arm must actually have been observed"
+
+
+async def test_an_observer_that_raises_does_not_change_the_result() -> None:
+    """A read must not fail — or differ — because progress reporting failed."""
+    quiet = await _handler().represent(_ref(), Budget(max_chars=None))
+    noisy = await _handler(observer=RaisingObserver()).represent(_ref(), Budget(max_chars=None))
+    assert quiet == noisy
 
 
 class TestBinaryHandlerCompliance(MediaHandlerCompliance):

@@ -11,12 +11,13 @@ from readeverything.domain.capability import Capability
 from readeverything.domain.errors import InfrastructureError, UnknownAffordanceError
 from readeverything.domain.identity import ContentHash, MediaKind, MimeType, SourceRef
 from readeverything.domain.locators import ByteRange, TimeSpan
+from readeverything.domain.observation import OperationProgressed
 from readeverything.domain.rendition import Budget, TextContent, TranscriptCue
 from readeverything.handlers.audio import AudioHandler, ReadSpanParams
 from readeverything.ports.audio import AudioExtractor
 from readeverything.ports.streams import MediaFacts, StreamInfo, StreamProbe
 from readeverything.ports.transcription import Transcriber
-from readeverything.testing.fakes import FakeTranscriber
+from readeverything.testing.fakes import FakeTranscriber, RaisingObserver, RecordingObserver
 from readeverything.testing.handler_compliance import MediaHandlerCompliance
 
 
@@ -187,12 +188,14 @@ def _handler(
     *,
     transcriber: object | None = None,
     audio: object | None = None,
+    observer: object | None = None,
 ) -> AudioHandler:
     return AudioHandler(
         source=_PathSource(path),
         probe=FfprobeStreams(),
         audio=audio or FfmpegAudio(),  # type: ignore[arg-type]  # structural stub in tests
         transcriber=transcriber,  # type: ignore[arg-type]  # structural stub in tests
+        observer=observer,  # type: ignore[arg-type]  # structural stub in tests
     )
 
 
@@ -608,6 +611,57 @@ async def test_an_unknown_affordance_raises() -> None:
         await _stub_handler(_facts(), transcriber=FakeTranscriber()).invoke(
             _ref(), "definitely_not_an_affordance", ReadSpanParams()
         )
+
+
+async def test_attaching_an_observer_does_not_change_the_result(audio_path: str) -> None:
+    """Unobserved output and observed output are the same. Every audio test rests on this."""
+    recorder = RecordingObserver()
+    unobserved = await _handler(audio_path, transcriber=FakeTranscriber()).represent(
+        _ref(), Budget(max_chars=None)
+    )
+    observed = await _handler(
+        audio_path, transcriber=FakeTranscriber(), observer=recorder
+    ).represent(_ref(), Budget(max_chars=None))
+    assert unobserved.text == observed.text
+    assert unobserved.locator_map.length == observed.locator_map.length
+    assert recorder.events, "the observed arm must actually have been observed"
+
+
+async def test_an_observer_that_raises_does_not_change_the_result(audio_path: str) -> None:
+    """A read must not fail — or differ — because progress reporting failed."""
+    quiet = await _handler(audio_path, transcriber=FakeTranscriber()).represent(
+        _ref(), Budget(max_chars=None)
+    )
+    noisy = await _handler(
+        audio_path, transcriber=FakeTranscriber(), observer=RaisingObserver()
+    ).represent(_ref(), Budget(max_chars=None))
+    assert quiet.text == noisy.text
+    assert quiet.locator_map.length == noisy.locator_map.length
+
+
+async def test_progress_is_reported_per_cue_with_a_known_total(audio_path: str) -> None:
+    recorder = RecordingObserver()
+    await _handler(audio_path, transcriber=FakeTranscriber(), observer=recorder).represent(
+        _ref(), Budget(max_chars=None)
+    )
+    kinds = [type(e).__name__ for e in recorder.events]
+    assert kinds[0] == "OperationStarted"
+    assert kinds[-1] == "OperationFinished"
+    progress = [e for e in recorder.events if isinstance(e, OperationProgressed)]
+    dones = [e.done for e in progress]
+    assert dones == list(range(1, len(progress) + 1))
+    assert {e.total for e in progress} == {len(progress)}
+
+
+async def test_a_read_that_never_reaches_a_transcript_is_still_narrated() -> None:
+    """A start with no end is the hang this narration exists to make visible,
+    so the degraded paths report one too."""
+    recorder = RecordingObserver()
+    await _handler(
+        "/does/not/exist.wav", transcriber=FakeTranscriber(), observer=recorder
+    ).represent(_ref(), Budget(max_chars=None))
+    kinds = [type(e).__name__ for e in recorder.events]
+    assert kinds == ["OperationStarted", "OperationFinished"]
 
 
 # --- the laws -----------------------------------------------------------------

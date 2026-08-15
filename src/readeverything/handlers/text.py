@@ -8,6 +8,7 @@ end to end without any model or binary being involved.
 
 from __future__ import annotations
 
+import time
 from typing import ClassVar
 
 from charset_normalizer import from_bytes
@@ -20,6 +21,7 @@ from readeverything.domain.errors import DomainError, UnknownAffordanceError
 from readeverything.domain.identity import MediaKind, SourceRef
 from readeverything.domain.locator_map import LocatorMap, LocatorSegment
 from readeverything.domain.locators import CharSpan
+from readeverything.domain.observation import OperationFinished, OperationStarted
 from readeverything.domain.rendition import (
     Budget,
     Degradation,
@@ -27,9 +29,14 @@ from readeverything.domain.rendition import (
     Rendition,
     TextContent,
 )
+from readeverything.ports.observation import Observer, emit
 from readeverything.ports.source import SourceReader
 
 _EXCERPT_CHARS = 1000
+
+#: What `represent` calls itself when it narrates. Matches the name every
+#: other handler uses, per `video.py`.
+_OPERATION = "represent"
 
 #: `Degradation.what` for text the handler wrote about a file rather than
 #: extracted from it. See `binary.SYNTHESIZED` — the same string, deliberately,
@@ -50,8 +57,9 @@ class TextHandler:
     handler_id: ClassVar[str] = "text"
     handler_version: ClassVar[int] = 1
 
-    def __init__(self, *, source: SourceReader) -> None:
+    def __init__(self, *, source: SourceReader, observer: Observer | None = None) -> None:
         self._source = source
+        self._observer = observer
 
     def requires(self) -> frozenset[Capability]:
         return frozenset()
@@ -115,6 +123,24 @@ class TextHandler:
         return Rendition(locator=CharSpan(start, end), content=TextContent(body))
 
     async def represent(self, ref: SourceRef, budget: Budget) -> Rendered:
+        """Narrated start to finish, matching `AudioHandler`/`VideoHandler`.
+
+        One step, so only `OperationStarted`/`OperationFinished` fire — there
+        is no per-unit loop here for `OperationProgressed` to describe.
+        """
+        emit(self._observer, OperationStarted(operation=_OPERATION, ref=ref))
+        started = time.perf_counter()
+        try:
+            return await self._represent(ref, budget)
+        finally:
+            emit(
+                self._observer,
+                OperationFinished(
+                    operation=_OPERATION, ref=ref, elapsed_s=time.perf_counter() - started
+                ),
+            )
+
+    async def _represent(self, ref: SourceRef, budget: Budget) -> Rendered:
         full, _ = await self._text(ref)
         degradations: tuple[Degradation, ...] = ()
         if not full:

@@ -2,16 +2,26 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 import sys
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import pytest
 
+from readeverything.adapters.semaphore_limiter import DEFAULT_LIMITS, SemaphoreLimiter
 from readeverything.composition import build_perception
 from readeverything.domain.capability import Capability, CapabilitySet
 from readeverything.domain.errors import DomainError
-from readeverything.testing.fakes import FakeVision
+from readeverything.domain.identity import ContentHash, MimeType, SourceRef
+from readeverything.domain.rendition import Budget
+from readeverything.handlers.audio import AudioHandler
+from readeverything.handlers.video import VideoHandler
+from readeverything.ports.limits import Limiter
+from readeverything.ports.streams import MediaFacts, StreamInfo
+from readeverything.testing.fakes import CountingLimiter, FakeVision, RecordingObserver
 
 
 def _png_bytes() -> bytes:
@@ -152,3 +162,202 @@ async def test_no_ffmpeg_means_no_video_handler(
         tmp_path, capabilities=CapabilitySet.empty(), probe_binaries=False
     )
     assert "VideoHandler" not in {type(h).__name__ for h in perception.registry.handlers}
+
+
+async def test_an_observer_and_a_limiter_reach_the_media_handlers(tmp_path: Path) -> None:
+    """Threaded, not just accepted: `build_perception` must not swallow either.
+
+    Reads the handlers' private attributes rather than exercising a full
+    read — this is `build_perception`'s job of wiring, not a behavioural test
+    of either handler, which already has its own.
+    """
+    observer = RecordingObserver()
+    limiter = CountingLimiter()
+    perception = await build_perception(
+        tmp_path,
+        capabilities=CapabilitySet.of({Capability.FFMPEG: "1"}),
+        observer=observer,
+        limiter=limiter,
+    )
+    handlers = {type(h).__name__: h for h in perception.registry.handlers}
+    video = handlers["VideoHandler"]
+    audio = handlers["AudioHandler"]
+    assert isinstance(video, VideoHandler)
+    assert isinstance(audio, AudioHandler)
+    assert video._observer is observer
+    assert video._limiter is limiter
+    assert audio._observer is observer
+
+
+async def test_supplying_an_observer_and_a_limiter_changes_no_output(tmp_path: Path) -> None:
+    """Narration and bounding are invisible in the result, and only there.
+
+    The old version of this test built one perception with defaults and
+    asserted its output looked right — it named no second program, so it
+    could not have detected an observer or a limiter changing anything. Both
+    arms are built here, and the injected arm is a real `RecordingObserver`
+    and a real `CountingLimiter`, so the comparison has two sides.
+
+    Note this is about OUTPUT. `build_perception` now installs a
+    `SemaphoreLimiter` by default, so concurrency deliberately does differ
+    between a caller's limiter and ours; what must not differ is a single
+    character of what the read reports.
+    """
+    (tmp_path / "a.txt").write_text("hello")
+    plain = await build_perception(tmp_path, probe_binaries=False)
+    observer = RecordingObserver()
+    instrumented = await build_perception(
+        tmp_path,
+        probe_binaries=False,
+        observer=observer,
+        limiter=CountingLimiter(),
+    )
+    quiet = await plain.represent("a.txt", Budget(max_chars=None))
+    noisy = await instrumented.represent("a.txt", Budget(max_chars=None))
+    assert quiet.text == noisy.text
+    assert (await plain.inspect("a.txt")).ref.uri == (await instrumented.inspect("a.txt")).ref.uri
+    # And the observer really was wired, so "identical" is not identical-
+    # because-nothing-happened.
+    assert observer.events
+
+
+class _CountingProxy:
+    """Wraps whatever limiter composition installed, recording peak in-flight.
+
+    It delegates rather than replacing: the bound under test is the one
+    `build_perception` chose for itself, not one this test supplied.
+    """
+
+    def __init__(self, inner: Limiter) -> None:
+        self._inner = inner
+        self.in_flight: dict[Capability, int] = {}
+        self.peak: dict[Capability, int] = {}
+
+    @asynccontextmanager
+    async def limit(self, capability: Capability) -> AsyncIterator[None]:
+        async with self._inner.limit(capability):
+            self.in_flight[capability] = self.in_flight.get(capability, 0) + 1
+            self.peak[capability] = max(self.peak.get(capability, 0), self.in_flight[capability])
+            try:
+                yield
+            finally:
+                self.in_flight[capability] -= 1
+
+
+class _SlowFrames:
+    """Slow enough that concurrent extractions actually overlap.
+
+    An instantaneous fake would never show a peak above one, and a peak of one
+    proves nothing about a bound.
+    """
+
+    async def frame_at(self, path: str, seconds: float) -> bytes | None:
+        await asyncio.sleep(0.005)
+        return b"frame"
+
+    async def scene_cuts(self, path: str, threshold: float = 0.4) -> tuple[float, ...]:
+        return ()
+
+
+class _SlowVision:
+    model_id = "slow-vision@1"
+
+    async def describe(self, data: bytes, mime: str, prompt: str) -> str:
+        await asyncio.sleep(0.005)
+        return f"[{len(data)} bytes]"
+
+
+class _StubProbe:
+    async def probe(self, path: str) -> MediaFacts:
+        return MediaFacts(
+            duration_s=30.0,
+            container="mp4",
+            streams=(
+                StreamInfo(
+                    kind="video",
+                    codec="h264",
+                    width=16,
+                    height=16,
+                    frame_rate=1.0,
+                    sample_rate=None,
+                    channels=None,
+                ),
+            ),
+        )
+
+
+class _AnyPathSource:
+    async def read_bytes(self, uri: str) -> bytes:
+        return b""
+
+    async def read_range(self, uri: str, start: int, end: int) -> bytes:
+        return b""
+
+    def stream(self, uri: str, *, chunk_size: int = 1 << 20):  # type: ignore[no-untyped-def]
+        raise NotImplementedError
+
+    async def local_path(self, uri: str) -> str:
+        return "/nonexistent.mp4"
+
+
+def _video_ref() -> SourceRef:
+    return SourceRef(
+        uri="v.mp4",
+        mime=MimeType.parse("video/mp4"),
+        content_hash=ContentHash("f" * 64),
+        size_bytes=4096,
+    )
+
+
+async def test_a_caller_who_injects_no_limiter_is_still_bounded(tmp_path: Path) -> None:
+    """The default is a real bound, not the absence of one.
+
+    `VideoHandler` fans out across every sampled moment at once. With no
+    bound, a thirty-second video launches thirty ffmpeg subprocesses
+    simultaneously, and the over-subscription that follows is caught by
+    `_moment` and reported to the caller as "(no frame could be decoded at
+    this moment)" — our load, misattributed to their file. So the composition
+    root supplies `SemaphoreLimiter()` when the caller supplies nothing.
+
+    Asserted by peak in-flight count against `DEFAULT_LIMITS`, measured
+    through a proxy that WRAPS the limiter composition chose rather than
+    replacing it — and asserted EQUAL to the bound, not merely under it, so a
+    handler that had quietly gone sequential would fail this too.
+    """
+    perception = await build_perception(
+        tmp_path,
+        capabilities=CapabilitySet.of({Capability.FFMPEG: "1"}),
+    )
+    video = {type(h).__name__: h for h in perception.registry.handlers}["VideoHandler"]
+    assert isinstance(video, VideoHandler)
+    assert video._limiter is not None
+    counting = _CountingProxy(video._limiter)
+    video._limiter = counting
+    video._source = _AnyPathSource()
+    video._probe = _StubProbe()
+    video._frames = _SlowFrames()
+    video._vision = _SlowVision()
+    video._interval_s = 1.0
+
+    await video.represent(_video_ref(), Budget(max_chars=None))
+
+    assert counting.peak[Capability.FFMPEG] == DEFAULT_LIMITS[Capability.FFMPEG]
+    assert counting.peak[Capability.VISION] == DEFAULT_LIMITS[Capability.VISION]
+
+
+async def test_an_explicitly_injected_limiter_replaces_the_default(tmp_path: Path) -> None:
+    """Defaulting must not mean overriding.
+
+    The control arm is a real, differently-configured limiter rather than
+    `None`: `None` is what composition now fills in for itself, so passing it
+    would compare the default to the default.
+    """
+    mine = SemaphoreLimiter({Capability.VISION: 1})
+    perception = await build_perception(
+        tmp_path,
+        capabilities=CapabilitySet.of({Capability.FFMPEG: "1"}),
+        limiter=mine,
+    )
+    video = {type(h).__name__: h for h in perception.registry.handlers}["VideoHandler"]
+    assert isinstance(video, VideoHandler)
+    assert video._limiter is mine

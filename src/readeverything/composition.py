@@ -20,6 +20,7 @@ from readeverything.adapters.hashing import ContentHasher, StatMemo
 from readeverything.adapters.local_source import LocalFileSource
 from readeverything.adapters.model_probe import ModelProbe
 from readeverything.adapters.probing import discover
+from readeverything.adapters.semaphore_limiter import SemaphoreLimiter
 from readeverything.domain.capability import Capability, CapabilitySet
 from readeverything.domain.errors import DomainError
 from readeverything.handlers.binary import BinaryHandler
@@ -28,6 +29,8 @@ from readeverything.pipeline.perception import Perception
 from readeverything.pipeline.resolution import ResolutionMemo
 from readeverything.ports.artifacts import ArtifactStore
 from readeverything.ports.handler import MediaHandler
+from readeverything.ports.limits import Limiter
+from readeverything.ports.observation import Observer
 from readeverything.ports.probe import CapabilityProbe
 from readeverything.ports.recognition import TextRecognizer
 from readeverything.ports.source import SourceReader
@@ -53,7 +56,9 @@ def _capabilities_handlers_can_use(handlers: list[MediaHandler]) -> frozenset[Ca
     return frozenset(needed)
 
 
-def _optional_image_handler(source: SourceReader, vision: VisionModel | None) -> list[MediaHandler]:
+def _optional_image_handler(
+    source: SourceReader, vision: VisionModel | None, observer: Observer | None
+) -> list[MediaHandler]:
     """`ImageHandler` when Pillow is importable, nothing when it is not.
 
     Pillow lives behind the `images` extra. A base install must yield a working
@@ -65,10 +70,12 @@ def _optional_image_handler(source: SourceReader, vision: VisionModel | None) ->
         from readeverything.handlers.image import ImageHandler
     except ImportError:
         return []
-    return [ImageHandler(source=source, vision=vision)]
+    return [ImageHandler(source=source, vision=vision, observer=observer)]
 
 
-def _optional_pdf_handler(source: SourceReader, vision: VisionModel | None) -> list[MediaHandler]:
+def _optional_pdf_handler(
+    source: SourceReader, vision: VisionModel | None, observer: Observer | None
+) -> list[MediaHandler]:
     """`PdfHandler` when pypdfium2 is importable, nothing when it is not.
 
     pypdfium2 lives behind the `documents` extra, guarded exactly like
@@ -88,11 +95,17 @@ def _optional_pdf_handler(source: SourceReader, vision: VisionModel | None) -> l
     recognizer: TextRecognizer | None = (
         VisionTextRecognizer(vision=vision) if vision is not None else None
     )
-    return [PdfHandler(source=source, probe=PdfiumProbe(), recognizer=recognizer)]
+    return [
+        PdfHandler(source=source, probe=PdfiumProbe(), recognizer=recognizer, observer=observer)
+    ]
 
 
 def _video_handler(
-    source: SourceReader, vision: VisionModel | None, transcriber: Transcriber | None
+    source: SourceReader,
+    vision: VisionModel | None,
+    transcriber: Transcriber | None,
+    observer: Observer | None,
+    limiter: Limiter | None,
 ) -> list[MediaHandler]:
     """`VideoHandler`, unconditionally.
 
@@ -120,16 +133,26 @@ def _video_handler(
             vision=vision,
             audio=FfmpegAudio(),
             transcriber=transcriber,
+            observer=observer,
+            limiter=limiter,
         )
     ]
 
 
-def _audio_handler(source: SourceReader, transcriber: Transcriber | None) -> list[MediaHandler]:
+def _audio_handler(
+    source: SourceReader,
+    transcriber: Transcriber | None,
+    observer: Observer | None,
+) -> list[MediaHandler]:
     """`AudioHandler`, unconditionally.
 
     Symmetric with `_video_handler`: ffmpeg is an OS binary, not an import, so
     there is nothing to guard with a `try`. The registry drops this handler
     when `FFMPEG` is unsatisfied, exactly as it does for video.
+
+    No `limiter` here: `AudioHandler` transcribes in one call, with nothing
+    concurrent to bound — `VideoHandler` is the one that fans out across
+    frames.
     """
     from readeverything.adapters.ffmpeg_audio import FfmpegAudio
     from readeverything.adapters.ffprobe_streams import FfprobeStreams
@@ -137,7 +160,11 @@ def _audio_handler(source: SourceReader, transcriber: Transcriber | None) -> lis
 
     return [
         AudioHandler(
-            source=source, probe=FfprobeStreams(), audio=FfmpegAudio(), transcriber=transcriber
+            source=source,
+            probe=FfprobeStreams(),
+            audio=FfmpegAudio(),
+            transcriber=transcriber,
+            observer=observer,
         )
     ]
 
@@ -150,6 +177,8 @@ async def build_perception(
     capabilities: CapabilitySet | None = None,
     artifacts: ArtifactStore | None = None,
     probe_binaries: bool = True,
+    observer: Observer | None = None,
+    limiter: Limiter | None = None,
 ) -> Perception:
     """A `Perception` over `root`, with everything else defaulted.
 
@@ -163,18 +192,39 @@ async def build_perception(
     cache key does not reliably identify which model produced a cached
     description — silently correcting one to match the other would hide that
     the caller declared something false, so this raises instead.
+
+    `observer` defaults to `None`: a caller who wants no narration pays
+    nothing and gets exactly today's code paths.
+
+    `limiter` does NOT default to nothing. `VideoHandler` fans out across
+    every sampled moment concurrently, so an unbounded default would launch
+    one ffmpeg subprocess per moment at once and, on a busy machine, report
+    its own over-subscription back to the caller as "(no frame could be
+    decoded at this moment)" — a claim about their file that nothing
+    established. So when no limiter is given, this constructs a
+    `SemaphoreLimiter()` with `DEFAULT_LIMITS`: conservative, per-capability,
+    and overridable. A caller passing an explicit limiter keeps theirs
+    untouched, and a caller who genuinely wants no bound at all passes
+    `SemaphoreLimiter({})` — an unconfigured capability is unbounded, so an
+    empty configuration opts out of bounding entirely.
+
+    `Perception` itself does not fan out across files; the caller writes that
+    loop (over `list()`), so it already controls whatever concurrency it wants
+    and bounding that here too would only fight it. The bound this default
+    supplies is strictly within a single file's read.
     """
     source = LocalFileSource(root=root)
+    limiter = SemaphoreLimiter() if limiter is None else limiter
     handlers: list[MediaHandler] = [
-        TextHandler(source=source),
-        *_optional_image_handler(source, vision),
-        *_optional_pdf_handler(source, vision),
-        *_video_handler(source, vision, transcriber),
-        *_audio_handler(source, transcriber),
+        TextHandler(source=source, observer=observer),
+        *_optional_image_handler(source, vision, observer),
+        *_optional_pdf_handler(source, vision, observer),
+        *_video_handler(source, vision, transcriber, observer, limiter),
+        *_audio_handler(source, transcriber, observer),
         # The fallback claims "*", so it must be last: the registry breaks a
         # rank tie by registration order, and a fallback registered first would
         # shadow nothing but would rank ahead of an equally-specific match.
-        BinaryHandler(source=source),
+        BinaryHandler(source=source, observer=observer),
     ]
     if capabilities is None:
         probes: list[CapabilityProbe] = [ModelProbe(vision=vision, transcriber=transcriber)]
