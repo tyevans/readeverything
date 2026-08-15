@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -42,3 +43,11 @@ async def test_a_key_with_path_characters_is_stored_safely(tmp_path: Path) -> No
     await fs.put("../escape", b"x")
     assert await fs.get("../escape") == b"x"
     assert not (tmp_path.parent / "escape").exists()
+
+
+async def test_concurrent_writers_do_not_share_a_temp_file(tmp_path: Path) -> None:
+    """Two writers of the same key must not collide on one .partial file."""
+    fs = FilesystemArtifactStore(root=tmp_path)
+    await asyncio.gather(*(fs.put("k", b"value") for _ in range(8)))
+    assert await fs.get("k") == b"value"
+    assert not list(tmp_path.rglob("*.partial"))

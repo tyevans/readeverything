@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from pathlib import Path
+from uuid import uuid4
 
 
 class InMemoryArtifactStore:
@@ -59,8 +60,9 @@ class FilesystemArtifactStore:
                 return
             path.parent.mkdir(parents=True, exist_ok=True)
             # Write-then-rename so a crash cannot leave a truncated artifact
-            # that later reads as a valid cache hit.
-            temporary = path.with_suffix(".partial")
+            # that later reads as a valid cache hit. Each writer gets its own
+            # temp file so concurrent writers of the same key never collide.
+            temporary = path.with_suffix(f".{uuid4().hex}.partial")
             temporary.write_bytes(value)
             temporary.replace(path)
 
