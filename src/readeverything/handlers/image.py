@@ -17,6 +17,7 @@ drops those affordances rather than the handler.
 from __future__ import annotations
 
 import io
+import time
 from typing import ClassVar
 
 try:
@@ -37,6 +38,7 @@ from readeverything.domain.errors import DomainError, InfrastructureError, Unkno
 from readeverything.domain.identity import MediaKind, SourceRef
 from readeverything.domain.locator_map import LocatorMap, LocatorSegment
 from readeverything.domain.locators import BBox, CharSpan
+from readeverything.domain.observation import OperationFinished, OperationStarted
 from readeverything.domain.rendition import (
     Budget,
     Degradation,
@@ -45,11 +47,16 @@ from readeverything.domain.rendition import (
     Rendition,
     TextContent,
 )
+from readeverything.ports.observation import Observer, emit
 from readeverything.ports.source import SourceReader
 from readeverything.ports.vision import VisionModel
 
 #: The whole frame, in the normalised coordinates every BBox uses.
 WHOLE_IMAGE = BBox(page=None, x=0.0, y=0.0, w=1.0, h=1.0)
+
+#: What `represent` calls itself when it narrates. Matches the name every
+#: other handler uses, per `video.py`.
+_OPERATION = "represent"
 
 _DESCRIBE_PROMPT = "Describe this image in two or three sentences."
 _OCR_PROMPT = (
@@ -99,9 +106,16 @@ class ImageHandler:
     handler_id: ClassVar[str] = "image"
     handler_version: ClassVar[int] = 1
 
-    def __init__(self, *, source: SourceReader, vision: VisionModel | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        source: SourceReader,
+        vision: VisionModel | None = None,
+        observer: Observer | None = None,
+    ) -> None:
         self._source = source
         self._vision = vision
+        self._observer = observer
 
     def requires(self) -> frozenset[Capability]:
         return frozenset()
@@ -230,6 +244,24 @@ class ImageHandler:
                 raise UnknownAffordanceError(name, (a.name for a in self.affordances()))
 
     async def represent(self, ref: SourceRef, budget: Budget) -> Rendered:
+        """Narrated start to finish, matching `AudioHandler`/`VideoHandler`.
+
+        One step — even when it calls the vision model — so only
+        `OperationStarted`/`OperationFinished` fire here.
+        """
+        emit(self._observer, OperationStarted(operation=_OPERATION, ref=ref))
+        started = time.perf_counter()
+        try:
+            return await self._represent(ref, budget)
+        finally:
+            emit(
+                self._observer,
+                OperationFinished(
+                    operation=_OPERATION, ref=ref, elapsed_s=time.perf_counter() - started
+                ),
+            )
+
+    async def _represent(self, ref: SourceRef, budget: Budget) -> Rendered:
         image = await self._open(ref)
         degradations: tuple[Degradation, ...] = ()
         described = ""

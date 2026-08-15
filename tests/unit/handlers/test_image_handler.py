@@ -10,6 +10,7 @@ from readeverything.domain.capability import Capability
 from readeverything.domain.errors import UnknownAffordanceError
 from readeverything.domain.identity import ContentHash, MediaKind, MimeType, SourceRef
 from readeverything.domain.locators import BBox
+from readeverything.domain.observation import OperationFinished, OperationStarted
 from readeverything.domain.rendition import Budget, ImageContent, TextContent
 from readeverything.handlers.image import (
     CropParams,
@@ -17,7 +18,13 @@ from readeverything.handlers.image import (
     ImageHandler,
     OcrParams,
 )
-from readeverything.testing.fakes import FakeSource, FakeVision, FakeVisionRefusing
+from readeverything.testing.fakes import (
+    FakeSource,
+    FakeVision,
+    FakeVisionRefusing,
+    RaisingObserver,
+    RecordingObserver,
+)
 from readeverything.testing.handler_compliance import MediaHandlerCompliance
 
 
@@ -39,8 +46,11 @@ def _ref(size: int = len(PNG)) -> SourceRef:
     )
 
 
-def _handler() -> ImageHandler:
-    return ImageHandler(source=FakeSource({"a.png": PNG, "somewhere/else": PNG}))
+def _handler(*, observer: object | None = None) -> ImageHandler:
+    return ImageHandler(
+        source=FakeSource({"a.png": PNG, "somewhere/else": PNG}),
+        observer=observer,  # type: ignore[arg-type]  # structural stub in tests
+    )
 
 
 async def test_the_card_reports_dimensions_and_format() -> None:
@@ -274,6 +284,34 @@ async def test_the_truncation_degradation_reports_the_characters_actually_kept(
     truncations = [d for d in rendered.degradations if d.what == "text truncated"]
     assert truncations
     assert truncations[0].detail.startswith(f"kept {len(rendered.text)} of ")
+
+
+async def test_represent_reports_started_and_finished_with_the_ref() -> None:
+    recorder = RecordingObserver()
+    ref = _ref()
+    await _handler(observer=recorder).represent(ref, Budget(max_chars=None))
+    kinds = [type(e).__name__ for e in recorder.events]
+    assert kinds == ["OperationStarted", "OperationFinished"]
+    started = recorder.events[0]
+    finished = recorder.events[1]
+    assert isinstance(started, OperationStarted)
+    assert isinstance(finished, OperationFinished)
+    assert started.ref == ref
+    assert finished.ref == ref
+    assert finished.elapsed_s >= 0.0
+
+
+async def test_without_an_observer_behaviour_is_unchanged() -> None:
+    before = await _handler().represent(_ref(), Budget(max_chars=None))
+    after = await _handler(observer=None).represent(_ref(), Budget(max_chars=None))
+    assert before == after
+
+
+async def test_an_observer_that_raises_does_not_change_the_result() -> None:
+    """A read must not fail — or differ — because progress reporting failed."""
+    quiet = await _handler().represent(_ref(), Budget(max_chars=None))
+    noisy = await _handler(observer=RaisingObserver()).represent(_ref(), Budget(max_chars=None))
+    assert quiet == noisy
 
 
 class TestImageHandlerCompliance(MediaHandlerCompliance):

@@ -176,9 +176,9 @@ async def test_an_observer_and_a_limiter_reach_the_media_handlers(tmp_path: Path
     audio = handlers["AudioHandler"]
     assert isinstance(video, VideoHandler)
     assert isinstance(audio, AudioHandler)
-    assert video._observer is observer  # noqa: SLF001
-    assert video._limiter is limiter  # noqa: SLF001
-    assert audio._observer is observer  # noqa: SLF001
+    assert video._observer is observer
+    assert video._limiter is limiter
+    assert audio._observer is observer
 
 
 async def test_defaults_change_nothing(tmp_path: Path) -> None:

@@ -55,7 +55,9 @@ def _capabilities_handlers_can_use(handlers: list[MediaHandler]) -> frozenset[Ca
     return frozenset(needed)
 
 
-def _optional_image_handler(source: SourceReader, vision: VisionModel | None) -> list[MediaHandler]:
+def _optional_image_handler(
+    source: SourceReader, vision: VisionModel | None, observer: Observer | None
+) -> list[MediaHandler]:
     """`ImageHandler` when Pillow is importable, nothing when it is not.
 
     Pillow lives behind the `images` extra. A base install must yield a working
@@ -67,10 +69,12 @@ def _optional_image_handler(source: SourceReader, vision: VisionModel | None) ->
         from readeverything.handlers.image import ImageHandler
     except ImportError:
         return []
-    return [ImageHandler(source=source, vision=vision)]
+    return [ImageHandler(source=source, vision=vision, observer=observer)]
 
 
-def _optional_pdf_handler(source: SourceReader, vision: VisionModel | None) -> list[MediaHandler]:
+def _optional_pdf_handler(
+    source: SourceReader, vision: VisionModel | None, observer: Observer | None
+) -> list[MediaHandler]:
     """`PdfHandler` when pypdfium2 is importable, nothing when it is not.
 
     pypdfium2 lives behind the `documents` extra, guarded exactly like
@@ -90,7 +94,9 @@ def _optional_pdf_handler(source: SourceReader, vision: VisionModel | None) -> l
     recognizer: TextRecognizer | None = (
         VisionTextRecognizer(vision=vision) if vision is not None else None
     )
-    return [PdfHandler(source=source, probe=PdfiumProbe(), recognizer=recognizer)]
+    return [
+        PdfHandler(source=source, probe=PdfiumProbe(), recognizer=recognizer, observer=observer)
+    ]
 
 
 def _video_handler(
@@ -194,15 +200,15 @@ async def build_perception(
     """
     source = LocalFileSource(root=root)
     handlers: list[MediaHandler] = [
-        TextHandler(source=source),
-        *_optional_image_handler(source, vision),
-        *_optional_pdf_handler(source, vision),
+        TextHandler(source=source, observer=observer),
+        *_optional_image_handler(source, vision, observer),
+        *_optional_pdf_handler(source, vision, observer),
         *_video_handler(source, vision, transcriber, observer, limiter),
         *_audio_handler(source, transcriber, observer),
         # The fallback claims "*", so it must be last: the registry breaks a
         # rank tie by registration order, and a fallback registered first would
         # shadow nothing but would rank ahead of an equally-specific match.
-        BinaryHandler(source=source),
+        BinaryHandler(source=source, observer=observer),
     ]
     if capabilities is None:
         probes: list[CapabilityProbe] = [ModelProbe(vision=vision, transcriber=transcriber)]

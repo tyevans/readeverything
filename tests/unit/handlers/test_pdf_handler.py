@@ -6,6 +6,7 @@ from readeverything.adapters.vision_recognizer import VisionTextRecognizer
 from readeverything.domain.capability import CapabilitySet
 from readeverything.domain.identity import ContentHash, MimeType, SourceRef
 from readeverything.domain.locators import BBox, CharSpan, PageRef
+from readeverything.domain.observation import OperationFinished, OperationStarted
 from readeverything.domain.rendition import Budget, ImageContent, TextContent
 from readeverything.handlers.pdf import (
     OcrPageParams,
@@ -16,7 +17,7 @@ from readeverything.handlers.pdf import (
 )
 from readeverything.ports.recognition import TextRecognizer
 from readeverything.registry.registry import MimeTypeRegistry
-from readeverything.testing.fakes import FakeSource, FakeVision
+from readeverything.testing.fakes import FakeSource, FakeVision, RaisingObserver, RecordingObserver
 from readeverything.testing.handler_compliance import MediaHandlerCompliance
 
 COMPLIANCE_PDF = born_digital(["Alpha.", "Bravo."])
@@ -31,11 +32,17 @@ def _ref(uri: str = "a.pdf", size_bytes: int = 1024) -> SourceRef:
     )
 
 
-def _handler(data: bytes, *, recognizer: TextRecognizer | None = None) -> PdfHandler:
+def _handler(
+    data: bytes,
+    *,
+    recognizer: TextRecognizer | None = None,
+    observer: object | None = None,
+) -> PdfHandler:
     return PdfHandler(
         source=FakeSource({"a.pdf": data, "somewhere/else": data, "compliance-subject": data}),
         probe=PdfiumProbe(),
         recognizer=recognizer,
+        observer=observer,  # type: ignore[arg-type]  # structural stub in tests
     )
 
 
@@ -324,6 +331,36 @@ async def test_ocr_is_not_offered_without_a_vision_capability() -> None:
     )
     names = {a.name for a in registry.available_affordances(registry.handlers[0])}
     assert "ocr_page" not in names
+
+
+async def test_represent_reports_started_and_finished_with_the_ref() -> None:
+    recorder = RecordingObserver()
+    ref = _ref()
+    await _handler(COMPLIANCE_PDF, observer=recorder).represent(ref, Budget(max_chars=None))
+    kinds = [type(e).__name__ for e in recorder.events]
+    assert kinds == ["OperationStarted", "OperationFinished"]
+    started = recorder.events[0]
+    finished = recorder.events[1]
+    assert isinstance(started, OperationStarted)
+    assert isinstance(finished, OperationFinished)
+    assert started.ref == ref
+    assert finished.ref == ref
+    assert finished.elapsed_s >= 0.0
+
+
+async def test_without_an_observer_behaviour_is_unchanged() -> None:
+    before = await _handler(COMPLIANCE_PDF).represent(_ref(), Budget(max_chars=None))
+    after = await _handler(COMPLIANCE_PDF, observer=None).represent(_ref(), Budget(max_chars=None))
+    assert before == after
+
+
+async def test_an_observer_that_raises_does_not_change_the_result() -> None:
+    """A read must not fail — or differ — because progress reporting failed."""
+    quiet = await _handler(COMPLIANCE_PDF).represent(_ref(), Budget(max_chars=None))
+    noisy = await _handler(COMPLIANCE_PDF, observer=RaisingObserver()).represent(
+        _ref(), Budget(max_chars=None)
+    )
+    assert quiet == noisy
 
 
 class TestPdfHandlerCompliance(MediaHandlerCompliance):

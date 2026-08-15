@@ -11,6 +11,7 @@ describing what the file is, which is the true and useful thing to index.
 
 from __future__ import annotations
 
+import time
 from typing import ClassVar
 
 from pydantic import BaseModel, Field
@@ -22,6 +23,7 @@ from readeverything.domain.errors import UnknownAffordanceError
 from readeverything.domain.identity import MediaKind, SourceRef
 from readeverything.domain.locator_map import LocatorMap, LocatorSegment
 from readeverything.domain.locators import ByteRange, CharSpan
+from readeverything.domain.observation import OperationFinished, OperationStarted
 from readeverything.domain.rendition import (
     Budget,
     Degradation,
@@ -29,7 +31,12 @@ from readeverything.domain.rendition import (
     Rendition,
     TextContent,
 )
+from readeverything.ports.observation import Observer, emit
 from readeverything.ports.source import SourceReader
+
+#: What `represent` calls itself when it narrates. Matches the name every
+#: other handler uses, per `video.py`.
+_OPERATION = "represent"
 
 _EXCERPT_BYTES = 64
 _BYTES_PER_LINE = 16
@@ -64,8 +71,9 @@ class BinaryHandler:
     handler_id: ClassVar[str] = "binary"
     handler_version: ClassVar[int] = 1
 
-    def __init__(self, *, source: SourceReader) -> None:
+    def __init__(self, *, source: SourceReader, observer: Observer | None = None) -> None:
         self._source = source
+        self._observer = observer
 
     def requires(self) -> frozenset[Capability]:
         return frozenset()
@@ -111,6 +119,24 @@ class BinaryHandler:
         )
 
     async def represent(self, ref: SourceRef, budget: Budget) -> Rendered:
+        """Narrated start to finish, matching `AudioHandler`/`VideoHandler`.
+
+        One step, so only `OperationStarted`/`OperationFinished` fire — there
+        is no per-unit loop here for `OperationProgressed` to describe.
+        """
+        emit(self._observer, OperationStarted(operation=_OPERATION, ref=ref))
+        started = time.perf_counter()
+        try:
+            return await self._represent(ref, budget)
+        finally:
+            emit(
+                self._observer,
+                OperationFinished(
+                    operation=_OPERATION, ref=ref, elapsed_s=time.perf_counter() - started
+                ),
+            )
+
+    async def _represent(self, ref: SourceRef, budget: Budget) -> Rendered:
         full = (
             f"Binary file {ref.uri} of type {ref.mime}, {ref.size_bytes} bytes. "
             f"No textual content could be extracted."

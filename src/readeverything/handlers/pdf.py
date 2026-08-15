@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import time
 from enum import Enum
 from typing import ClassVar
 
@@ -40,6 +41,7 @@ from readeverything.domain.errors import UnknownAffordanceError
 from readeverything.domain.identity import MediaKind, SourceRef
 from readeverything.domain.locator_map import LocatorMap, LocatorSegment
 from readeverything.domain.locators import BBox, ByteRange, CharSpan, PageRef
+from readeverything.domain.observation import OperationFinished, OperationStarted
 from readeverything.domain.rendition import (
     Budget,
     Degradation,
@@ -48,9 +50,14 @@ from readeverything.domain.rendition import (
     Rendition,
     TextContent,
 )
+from readeverything.ports.observation import Observer, emit
 from readeverything.ports.probe_media import MediaProbe
 from readeverything.ports.recognition import TextRecognizer
 from readeverything.ports.source import SourceReader
+
+#: What `represent` calls itself when it narrates. Matches the name every
+#: other handler uses, per `video.py`.
+_OPERATION = "represent"
 
 #: Pillow is optional here (unlike `image.py`, which requires it outright):
 #: `page_image`/`ocr_page` degrade without it rather than the whole handler
@@ -160,10 +167,12 @@ class PdfHandler:
         source: SourceReader,
         probe: MediaProbe,
         recognizer: TextRecognizer | None = None,
+        observer: Observer | None = None,
     ) -> None:
         self._source = source
         self._probe = probe
         self._recognizer = recognizer
+        self._observer = observer
 
     def requires(self) -> frozenset[Capability]:
         """Nothing. Reading a born-digital PDF needs no model and no binary."""
@@ -413,6 +422,27 @@ class PdfHandler:
         return Rendition(locator=PageRef(number), content=TextContent(text), degraded=True)
 
     async def represent(self, ref: SourceRef, budget: Budget) -> Rendered:
+        """Narrated start to finish, matching `AudioHandler`/`VideoHandler`.
+
+        No `OperationProgressed` here: this loops over pages extracting the
+        text layer, not calling a model per page. `ocr_page` is the loop that
+        pays per call, and it is invoked once per page through `invoke()`
+        rather than looped inside `represent()`, so there is no per-call
+        "still working" gap for this method to narrate.
+        """
+        emit(self._observer, OperationStarted(operation=_OPERATION, ref=ref))
+        started = time.perf_counter()
+        try:
+            return await self._represent(ref, budget)
+        finally:
+            emit(
+                self._observer,
+                OperationFinished(
+                    operation=_OPERATION, ref=ref, elapsed_s=time.perf_counter() - started
+                ),
+            )
+
+    async def _represent(self, ref: SourceRef, budget: Budget) -> Rendered:
         data = await self._source.read_bytes(ref.uri)
         document = self._open(data)
         if document is None:
