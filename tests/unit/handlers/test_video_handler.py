@@ -1043,15 +1043,32 @@ async def test_frame_work_is_bounded_by_the_configured_limits(sample_video: str)
     assert limiter.peak[Capability.FFMPEG] == 3
 
 
-async def test_without_a_limiter_behaviour_is_unchanged(sample_video: str) -> None:
-    """Every existing video test rests on this."""
-    before = await _handler(sample_video, vision=FakeVision()).represent(
+async def test_a_limiter_changes_the_pace_of_a_read_and_never_its_result(
+    sample_video: str,
+) -> None:
+    """The two arms are different programs, which is the whole point.
+
+    The previous version of this test passed `limiter=None` as its "control"
+    against a default of `None` — it compared a program to itself and could
+    not fail. Here the control is genuinely unlimited and the other arm is a
+    real `SemaphoreLimiter` narrowed to one at a time, so bounding is
+    demonstrably in effect (the counting proxy's peak proves it) and the text
+    it produced is nonetheless byte-identical. A bound is a statement about
+    when work runs, never about what it found.
+    """
+    bounded = _BoundedCountingLimiter({Capability.VISION: 1, Capability.FFMPEG: 1})
+    unlimited = await _handler(sample_video, vision=FakeVision(), interval=1.0).represent(
         _ref(), Budget(max_chars=None)
     )
-    after = await _handler(sample_video, vision=FakeVision(), limiter=None).represent(
-        _ref(), Budget(max_chars=None)
-    )
-    assert before.text == after.text
+    limited = await _handler(
+        sample_video, vision=FakeVision(), limiter=bounded, interval=1.0
+    ).represent(_ref(), Budget(max_chars=None))
+    # The bound was real and was actually exercised, so the equality below is
+    # a claim about two different executions rather than about one.
+    assert bounded.peak[Capability.FFMPEG] == 1
+    assert bounded.peak[Capability.VISION] == 1
+    assert unlimited.text == limited.text
+    assert unlimited.locator_map.length == limited.locator_map.length
 
 
 async def test_an_observer_that_raises_does_not_change_the_result(

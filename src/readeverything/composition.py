@@ -20,6 +20,7 @@ from readeverything.adapters.hashing import ContentHasher, StatMemo
 from readeverything.adapters.local_source import LocalFileSource
 from readeverything.adapters.model_probe import ModelProbe
 from readeverything.adapters.probing import discover
+from readeverything.adapters.semaphore_limiter import SemaphoreLimiter
 from readeverything.domain.capability import Capability, CapabilitySet
 from readeverything.domain.errors import DomainError
 from readeverything.handlers.binary import BinaryHandler
@@ -192,13 +193,28 @@ async def build_perception(
     description — silently correcting one to match the other would hide that
     the caller declared something false, so this raises instead.
 
-    `observer` and `limiter` default to `None`, threaded to the handlers that
-    take them — a caller who wants neither pays nothing and gets exactly
-    today's code paths. `Perception` itself does not fan out across files; the
-    caller writes that loop (over `list()`), so it already controls whatever
-    concurrency it wants and bounding it here too would only fight it.
+    `observer` defaults to `None`: a caller who wants no narration pays
+    nothing and gets exactly today's code paths.
+
+    `limiter` does NOT default to nothing. `VideoHandler` fans out across
+    every sampled moment concurrently, so an unbounded default would launch
+    one ffmpeg subprocess per moment at once and, on a busy machine, report
+    its own over-subscription back to the caller as "(no frame could be
+    decoded at this moment)" — a claim about their file that nothing
+    established. So when no limiter is given, this constructs a
+    `SemaphoreLimiter()` with `DEFAULT_LIMITS`: conservative, per-capability,
+    and overridable. A caller passing an explicit limiter keeps theirs
+    untouched, and a caller who genuinely wants no bound at all passes
+    `SemaphoreLimiter({})` — an unconfigured capability is unbounded, so an
+    empty configuration opts out of bounding entirely.
+
+    `Perception` itself does not fan out across files; the caller writes that
+    loop (over `list()`), so it already controls whatever concurrency it wants
+    and bounding that here too would only fight it. The bound this default
+    supplies is strictly within a single file's read.
     """
     source = LocalFileSource(root=root)
+    limiter = SemaphoreLimiter() if limiter is None else limiter
     handlers: list[MediaHandler] = [
         TextHandler(source=source, observer=observer),
         *_optional_image_handler(source, vision, observer),
