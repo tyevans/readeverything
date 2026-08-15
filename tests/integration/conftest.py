@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.fixtures_media import ffmpeg_available, video_with_audio
 from tests.fixtures_pdf import blank, born_digital, scanned_like
 
 
@@ -26,6 +27,8 @@ def media_root(tmp_path: Path) -> Path:
     (tmp_path / "notes.txt").write_text("hello from the integration tier")
     (tmp_path / "data.bin").write_bytes(bytes(range(256)))
     (tmp_path / "photo.png").write_bytes(_png_bytes())
+    if ffmpeg_available():
+        (tmp_path / "clip.mp4").write_bytes(video_with_audio())
     return tmp_path
 
 

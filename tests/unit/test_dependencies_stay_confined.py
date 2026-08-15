@@ -34,6 +34,11 @@ CONFINED: dict[str, set[str]] = {
         "adapters/local_source.py",
         "adapters/binary_probe.py",
         "adapters/pdfium_probe.py",
+        # ffprobe is spawned via create_subprocess_exec with an argv vector,
+        # same pattern as binary_probe.py.
+        "adapters/ffprobe_streams.py",
+        # ffmpeg, same pattern, extracting a single frame.
+        "adapters/ffmpeg_frames.py",
     },
     # shutil.which locates the executable a capability probe is about to run;
     # confined to the one adapter that probes binaries.

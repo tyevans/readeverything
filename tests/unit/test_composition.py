@@ -114,18 +114,21 @@ async def test_no_vision_model_means_those_affordances_are_not_offered(tmp_path:
 async def test_probing_an_unused_capability_does_not_change_the_fingerprint(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """No bundled handler consumes FFMPEG/EXIFTOOL/LIBREOFFICE/TESSERACT, so a
-    `BinaryProbe` finding one must not invalidate the artifact cache — the
+    """`VideoHandler` is the first bundled handler to consume FFMPEG, but no
+    bundled handler consumes EXIFTOOL/LIBREOFFICE/TESSERACT, so a `BinaryProbe`
+    finding one of those must not invalidate the artifact cache — the
     fingerprint of a deployment must not depend on a capability nothing uses.
     """
     baseline = await build_perception(tmp_path, probe_binaries=False)
     baseline_fingerprint = baseline.registry.capabilities.fingerprint()
 
-    class _FakeProbeThatFindsEverything:
-        async def revision(self, capability: Capability) -> str:
+    class _FakeProbeThatFindsUnusedBinaries:
+        async def revision(self, capability: Capability) -> str | None:
+            if capability in (Capability.FFMPEG, Capability.VISION):
+                return None
             return "some-version-string"
 
-    monkeypatch.setattr("readeverything.composition.BinaryProbe", _FakeProbeThatFindsEverything)
+    monkeypatch.setattr("readeverything.composition.BinaryProbe", _FakeProbeThatFindsUnusedBinaries)
     with_probe = await build_perception(tmp_path, probe_binaries=True)
     assert with_probe.registry.capabilities.fingerprint() == baseline_fingerprint
 
@@ -135,3 +138,17 @@ def test_the_composition_root_reads_no_environment() -> None:
     source = Path("src/readeverything/composition.py").read_text()
     assert "os.environ" not in source
     assert "getenv" not in source
+
+
+async def test_no_ffmpeg_means_no_video_handler(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Negotiation against a real OS dependency, for the first time.
+
+    The handler REQUIRES ffmpeg, so without it the registry drops the handler
+    entirely and video files fall to the binary fallback. Narrower, not broken.
+    """
+    perception = await build_perception(
+        tmp_path, capabilities=CapabilitySet.empty(), probe_binaries=False
+    )
+    assert "VideoHandler" not in {type(h).__name__ for h in perception.registry.handlers}
