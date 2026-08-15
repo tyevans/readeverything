@@ -228,7 +228,12 @@ class VideoHandler:
         affordances: list[Affordance] = [
             Affordance(
                 name="frame_at",
-                description="Extract one video frame, as a PNG image, at a point in time.",
+                description=(
+                    "Extract one video frame at a point in time, as raw PNG image bytes. "
+                    "Use this only when you want the image ITSELF. To learn what is in a "
+                    "frame, call describe_frame instead — it extracts the frame for you, "
+                    "and calling both decodes the same frame twice."
+                ),
                 params=FrameAtParams,
                 requires=frozenset({Capability.FFMPEG}),
                 level=DetailLevel.SEGMENT,

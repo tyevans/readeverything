@@ -2,10 +2,19 @@
 
 Order is deliberate and is the whole point of the module:
 
-1. A magic signature in the content. Authoritative when present.
+0. An ISO BMFF `ftyp` box, checked directly. See `_is_iso_bmff`.
+1. A magic signature in the content, *above a confidence floor*. Authoritative
+   when present. See `_SIGNATURE_FLOOR` for why the floor is not optional.
 2. The filename's extension. A claim, consulted only when the bytes are silent.
 3. Decodable as UTF-8 with no control characters, therefore `text/plain`.
 4. `application/octet-stream`, which the binary fallback handler always accepts.
+
+Step 0 and the floor were both added after a 44-minute video was detected as
+`audio/x-sndr` — a 0.20-confidence guess at a Macintosh sound resource — and
+dispatched to the audio handler, which cost it every visual affordance while
+reporting nothing wrong. "Detected as audio" and "is audio" are
+indistinguishable downstream, so a detection this module gets wrong is a
+capability the caller silently never had.
 
 Getting 1 and 2 the wrong way round is the classic defect: a PNG named
 `photo.txt` would dispatch to a text handler and produce mojibake that looks
@@ -44,6 +53,42 @@ _MP4_FAMILY = frozenset({"video/mp4", "audio/mp4"})
 #: and carriage return are excluded because they obviously do.
 _CONTROL = frozenset(range(0, 9)) | frozenset(range(14, 32))
 
+#: Below this, a puremagic match is not a signature — it is a coincidence.
+#:
+#: Measured across this project's video corpus: every genuine match reports
+#: 0.80 or higher, and EVERY mp4 in it also matches "Macintosh SNDR Resource"
+#: (`audio/x-sndr`) at 0.20. That junk match normally loses to the real one and
+#: is invisible. On a container whose brand puremagic has no signature for it
+#: was the only match, and a 44-minute video was dispatched to the audio
+#: handler — which cost it every visual affordance without reporting anything,
+#: because "detected as audio" and "is audio" are indistinguishable downstream.
+#:
+#: A match this weak means the bytes are SILENT, which is the case the filename
+#: exists to answer. The floor sits between the two observed populations rather
+#: than at a round number.
+_SIGNATURE_FLOOR = 0.5
+
+#: Offset and value of the box type every ISO BMFF file carries: a 4-byte size,
+#: then the literal `ftyp`.
+_FTYP_OFFSET = 4
+_FTYP = b"ftyp"
+
+
+def _is_iso_bmff(head: bytes) -> bool:
+    """Whether `head` begins with an ISO BMFF `ftyp` box.
+
+    puremagic identifies this container by enumerating BRANDS — `isom`, `mp42`,
+    `M4V ` and so on — so it misses any brand its table predates. `iso5`, the
+    DASH-derived brand, is one such, and that omission is what misdetected a
+    44-minute video as a Macintosh sound resource.
+
+    The box itself is the stable fact: brands come and go, `ftyp` at offset 4
+    does not. Checking it directly keeps this a CONTENT decision, which is the
+    order this module promises; falling back to the extension would have fixed
+    the same file while leaving one named `.bin` broken.
+    """
+    return len(head) >= _FTYP_OFFSET + len(_FTYP) and head[_FTYP_OFFSET:8] == _FTYP
+
 
 class PuremagicDetector:
     """Content-first mimetype detection."""
@@ -60,8 +105,29 @@ class PuremagicDetector:
             matches = []
         guessed, _ = mimetypes.guess_type(uri)
 
+        # An ISO BMFF container, recognised by its own box rather than by a
+        # brand table. Checked before the signature list because puremagic's
+        # answer for an unlisted brand is not a weaker version of this one — it
+        # is unrelated noise, and there is no confidence at which noise about a
+        # Macintosh sound resource should outrank the container actually here.
+        if _is_iso_bmff(head):
+            # The `.m4a`/`.mp4` ambiguity is unchanged: one container family
+            # holds both, and only the extension separates audio-only from
+            # video. See the module docstring.
+            if guessed and guessed.startswith("audio/"):
+                try:
+                    return MimeType.parse(guessed)
+                except ValueError:
+                    pass
+            return MimeType.parse("video/mp4")
+
         for match in matches:
             if match.mime_type:
+                if match.confidence < _SIGNATURE_FLOOR:
+                    # Not a signature, a coincidence. Treat the bytes as silent
+                    # and let the filename — or the text/binary tail below —
+                    # answer, rather than asserting a type on 0.20 confidence.
+                    continue
                 try:
                     signature = MimeType.parse(match.mime_type)
                 except ValueError:
