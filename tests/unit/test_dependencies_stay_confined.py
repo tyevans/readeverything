@@ -29,6 +29,9 @@ CONFINED: dict[str, set[str]] = {
     "charset_normalizer": {"handlers/text.py"},
     "PIL": {"handlers/image.py"},
     "faster_whisper": {"adapters/whisper_transcriber.py"},
+    # The remote transcriber is the only place that speaks HTTP directly:
+    # every other network-touching adapter goes through langchain's client.
+    "httpx": {"adapters/remote_whisper_transcriber.py"},
     # pypdfium2 wraps Google's PDFium. Two homes: the probe adapter answers
     # cheap document facts, and the PDF handler extracts text — which is not a
     # probe's job, and no handler imports an adapter.

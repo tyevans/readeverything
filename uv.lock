@@ -636,6 +636,9 @@ images = [
 langchain = [
     { name = "langchain-core" },
 ]
+remote-transcription = [
+    { name = "httpx" },
+]
 testing = [
     { name = "pytest" },
 ]
@@ -654,6 +657,7 @@ requires-dist = [
     { name = "deepagents", marker = "extra == 'agents'", specifier = ">=0.7,<0.8" },
     { name = "deepagents", marker = "extra == 'dev'", specifier = ">=0.7,<0.8" },
     { name = "faster-whisper", marker = "extra == 'transcription'", specifier = ">=1.2,<2" },
+    { name = "httpx", marker = "extra == 'remote-transcription'", specifier = ">=0.27" },
     { name = "hypothesis", marker = "extra == 'dev'", specifier = ">=6.115" },
     { name = "import-linter", marker = "extra == 'dev'", specifier = ">=2.1" },
     { name = "langchain-core", marker = "extra == 'langchain'", specifier = ">=0.3" },
@@ -672,7 +676,7 @@ requires-dist = [
     { name = "reportlab", marker = "extra == 'dev'", specifier = ">=4.2" },
     { name = "ruff", marker = "extra == 'dev'", specifier = "==0.16.2" },
 ]
-provides-extras = ["langchain", "vision", "images", "documents", "transcription", "testing", "agents", "dev"]
+provides-extras = ["langchain", "vision", "images", "documents", "transcription", "remote-transcription", "testing", "agents", "dev"]
 
 [[package]]
 name = "defusedxml"

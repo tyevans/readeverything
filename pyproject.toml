@@ -26,6 +26,9 @@ vision = ["langchain-openai>=0.2", "langchain-core>=0.3"]
 images = ["pillow>=11.0"]
 documents = ["pypdfium2>=5.13,<6"]
 transcription = ["faster-whisper>=1.2,<2"]
+# Transcription against a whisper.cpp server instead of local weights: an HTTP
+# client and nothing else, so it is a far lighter extra than `transcription`.
+remote-transcription = ["httpx>=0.27"]
 testing = ["pytest>=8.3"]
 # Pinned below 0.8: deepagents' surface moves fast, and an unpinned dependency
 # on a fast-moving 0.x is how a library acquires breakage it did not choose.
