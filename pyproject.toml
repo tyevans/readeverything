@@ -44,7 +44,7 @@ packages = ["src/readeverything"]
 [tool.ruff]
 line-length = 100
 src = ["src", "tests"]
-extend-exclude = ["docs"]
+include = ["*.py", "*.pyi", "**/pyproject.toml"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP", "B", "C4", "SIM", "RUF"]
