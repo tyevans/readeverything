@@ -14,16 +14,22 @@ so would reopen the seam this module exists to close.
 from __future__ import annotations
 
 from readeverything.domain.capability import Capability
+from readeverything.ports.transcription import Transcriber
 from readeverything.ports.vision import VisionModel
 
 
 class ModelProbe:
     """Reports model-backed capabilities from the models actually injected."""
 
-    def __init__(self, *, vision: VisionModel | None = None) -> None:
+    def __init__(
+        self, *, vision: VisionModel | None = None, transcriber: Transcriber | None = None
+    ) -> None:
         self._vision = vision
+        self._transcriber = transcriber
 
     async def revision(self, capability: Capability) -> str | None:
         if capability is Capability.VISION and self._vision is not None:
             return self._vision.model_id
+        if capability is Capability.ASR and self._transcriber is not None:
+            return self._transcriber.model_id
         return None

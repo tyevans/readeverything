@@ -31,6 +31,7 @@ from readeverything.ports.handler import MediaHandler
 from readeverything.ports.probe import CapabilityProbe
 from readeverything.ports.recognition import TextRecognizer
 from readeverything.ports.source import SourceReader
+from readeverything.ports.transcription import Transcriber
 from readeverything.ports.vision import VisionModel
 from readeverything.registry.registry import MimeTypeRegistry
 
@@ -109,10 +110,29 @@ def _video_handler(source: SourceReader, vision: VisionModel | None) -> list[Med
     ]
 
 
+def _audio_handler(source: SourceReader, transcriber: Transcriber | None) -> list[MediaHandler]:
+    """`AudioHandler`, unconditionally.
+
+    Symmetric with `_video_handler`: ffmpeg is an OS binary, not an import, so
+    there is nothing to guard with a `try`. The registry drops this handler
+    when `FFMPEG` is unsatisfied, exactly as it does for video.
+    """
+    from readeverything.adapters.ffmpeg_audio import FfmpegAudio
+    from readeverything.adapters.ffprobe_streams import FfprobeStreams
+    from readeverything.handlers.audio import AudioHandler
+
+    return [
+        AudioHandler(
+            source=source, probe=FfprobeStreams(), audio=FfmpegAudio(), transcriber=transcriber
+        )
+    ]
+
+
 async def build_perception(
     root: Path | str,
     *,
     vision: VisionModel | None = None,
+    transcriber: Transcriber | None = None,
     capabilities: CapabilitySet | None = None,
     artifacts: ArtifactStore | None = None,
     probe_binaries: bool = True,
@@ -136,13 +156,14 @@ async def build_perception(
         *_optional_image_handler(source, vision),
         *_optional_pdf_handler(source, vision),
         *_video_handler(source, vision),
+        *_audio_handler(source, transcriber),
         # The fallback claims "*", so it must be last: the registry breaks a
         # rank tie by registration order, and a fallback registered first would
         # shadow nothing but would rank ahead of an equally-specific match.
         BinaryHandler(source=source),
     ]
     if capabilities is None:
-        probes: list[CapabilityProbe] = [ModelProbe(vision=vision)]
+        probes: list[CapabilityProbe] = [ModelProbe(vision=vision, transcriber=transcriber)]
         if probe_binaries:
             probes.append(BinaryProbe())
         # `BinaryProbe` checks every OS binary it knows about
