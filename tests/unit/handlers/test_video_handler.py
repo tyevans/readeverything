@@ -264,7 +264,12 @@ def _handler(
     )
 
 
-def _facts(duration_s: float = 5.0, *, frame_rate: float | None = 10.0) -> MediaFacts:
+def _facts(
+    duration_s: float = 5.0,
+    *,
+    frame_rate: float | None = 10.0,
+    subtitles: tuple[StreamInfo, ...] = (),
+) -> MediaFacts:
     return MediaFacts(
         duration_s=duration_s,
         container="mov,mp4",
@@ -278,7 +283,22 @@ def _facts(duration_s: float = 5.0, *, frame_rate: float | None = 10.0) -> Media
                 sample_rate=None,
                 channels=None,
             ),
+            *subtitles,
         ),
+    )
+
+
+def _subtitle(codec: str, *, is_text: bool, language: str | None = "eng") -> StreamInfo:
+    return StreamInfo(
+        kind="subtitle",
+        codec=codec,
+        width=None,
+        height=None,
+        frame_rate=None,
+        sample_rate=None,
+        channels=None,
+        language=language,
+        is_text=is_text,
     )
 
 
@@ -295,6 +315,32 @@ def _stub_handler(facts: MediaFacts, **kwargs: object) -> VideoHandler:
 
 
 # --- the card -----------------------------------------------------------------
+
+
+async def test_the_card_reports_caption_tracks() -> None:
+    """An agent not told captions exist pays a vision model to learn what one
+    ffmpeg call would have told it for free — which is exactly what happened
+    on the reference file before this key existed.
+
+    Counts rather than a bare flag, and text tracks counted separately from
+    subtitle tracks, because the two answer different questions: whether
+    words are present at all, and whether reaching them is cheap.
+    """
+    facts = _facts(
+        subtitles=(_subtitle("dvd_subtitle", is_text=False), _subtitle("mov_text", is_text=True))
+    )
+    card = await _stub_handler(facts).describe(_ref())
+    assert card.facts["subtitle_streams"] == 2
+    assert card.facts["text_caption_tracks"] == 1
+
+
+async def test_the_card_omits_caption_keys_when_there_are_none() -> None:
+    """`video_codec` is omitted rather than empty when a probe cannot report
+    it. Captions follow the same rule: an absent key admits there is nothing,
+    where a zero would read as a measurement someone took."""
+    card = await _stub_handler(_facts()).describe(_ref())
+    assert "subtitle_streams" not in card.facts
+    assert "text_caption_tracks" not in card.facts
 
 
 def test_the_ports_are_satisfied_by_the_real_adapters() -> None:

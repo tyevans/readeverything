@@ -13,7 +13,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal, Protocol, runtime_checkable
 
-
 #: Subtitle codecs that carry characters. Everything else a container calls a
 #: subtitle carries pixels — `dvd_subtitle`, `hdmv_pgs_subtitle` — and reaching
 #: its words means OCR, which costs about what reading a page of a scanned PDF

@@ -386,6 +386,22 @@ class VideoHandler:
                 card_facts["audio_sample_rate"] = audio.sample_rate
             if audio.channels is not None:
                 card_facts["audio_channels"] = audio.channels
+        if facts.subtitle_streams:
+            # Two counts rather than one flag. "Are there words in this file"
+            # and "is reaching them cheap" are different questions: a bitmap
+            # track needs OCR and a text track needs one ffmpeg call, and a
+            # reader choosing between the timeline and a vision model needs
+            # the second answer, not just the first. Omitted entirely when
+            # there are no subtitle streams, for the reason `video_codec` is
+            # omitted above — an absent key admits nothing is there, where a
+            # zero reads as a measurement.
+            card_facts["subtitle_streams"] = len(facts.subtitle_streams)
+            card_facts["text_caption_tracks"] = len(facts.text_subtitle_streams)
+            languages = sorted(
+                {s.language for s in facts.text_subtitle_streams if s.language is not None}
+            )
+            if languages:
+                card_facts["caption_languages"] = ", ".join(languages)
         return Card(
             ref=ref,
             kind=MediaKind.VIDEO,
