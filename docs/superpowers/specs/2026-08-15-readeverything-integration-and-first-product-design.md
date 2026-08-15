@@ -351,42 +351,92 @@ The distribution is `deepagents-read-everything`. `grep -rn "deepagents"
 src/ tests/` returns nothing. Spec 1 §10 specified a `MediaAwareBackend`
 and it was never built.
 
-### 7.2 The design
+### 7.2 What was verified
 
-`build_tools(perception) -> list[BaseTool]` already returns plain
-LangChain tools, which is the correct framework-agnostic core and stays
-exactly as it is. What is missing is the last mile.
+`deepagents==0.7.6`, introspected directly from the installed package,
+not read from documentation:
 
-Ship `readeverything.agent.deepagents` behind a `deepagents` extra,
-containing one helper that goes from a directory to a ready deep agent.
-The framework-agnostic path stays first-class and stays the one the
-library itself uses; the deepagents helper is a thin convenience over
-it, importing `deepagents` only inside the extra-guarded module.
+- `create_deep_agent(model=None, tools=None, *, system_prompt=None,
+  middleware=(), subagents=None, backend: BackendProtocol | None = None,
+  ...) -> CompiledStateGraph`
+- `tools: Sequence[BaseTool | Callable | dict] | None` — plain LangChain
+  `BaseTool` objects are accepted directly.
+- `deepagents.backends.protocol.BackendProtocol` is an `abc.ABC` whose
+  methods raise `NotImplementedError` by default rather than being
+  `@abstractmethod`-enforced, so **partial implementations are legal**.
+  Five sync methods — `ls`, `read(file_path, offset=0, limit=2000)`,
+  `grep`, `glob`, `write` — plus async mirrors (`als`, `aread`, …) that
+  default to `asyncio.to_thread` wrapping the sync form.
+- All content in `ReadResult`/`FileData` is `str` (utf-8, or base64 for
+  binary). There is no card, affordance, or structured-content concept.
+- `CompositeBackend` exists, and the built-ins include
+  `FilesystemBackend`.
 
-**This section's design is provisional pending verification of the
-current `deepagents` public API.** The plan's first task in this area
-must confirm, against the installed package, the exact agent-construction
-signature and whether a third-party filesystem/store backend protocol
-exists. If a backend protocol exists and is implementable within this
-library's read-only, no-environment constraints, implementing it is
-strictly better than a construction helper — it would give a deep
-agent's *built-in* file tools media understanding transparently, which
-is what Spec 1 §10 originally envisioned. If it does not exist or
-demands mutability this library will not offer, the construction helper
-is the honest answer and the spec's §10 ambition is formally retired
-with a note saying why.
+### 7.3 The design: two layers, and a ruling
 
-Choosing between these two on evidence is a task in the plan, not a
-guess in the spec.
+**Layer one — the free one.** `build_tools(perception)` already returns
+`list[BaseTool]`, which is already `create_deep_agent`'s `tools` type.
+This composes today with no code, no dependency, and no extra:
 
-### 7.3 Rules
+```python
+agent = create_deep_agent(tools=build_tools(perception))
+```
+
+It costs a documented paragraph and it ships regardless of layer two.
+
+**Layer two — `MediaAwareBackend`.** Implement `BackendProtocol` so that
+a deep agent's *built-in* file tools gain media understanding without
+the agent learning any new tool.
+
+**Ruling, against a recommendation to skip this.** The research
+recommended documentation only, on the grounds that a backend would mean
+"mangling image bytes into text to fit `ReadResult.content: str`." That
+objection inverts on inspection. `read()` must return `str`;
+`Perception.represent()` returns `Rendered.text`, which *is* `str`.
+Producing meaningful text from arbitrary media is not a compromise this
+library makes to fit the protocol — it is the library's stated purpose,
+the thing Spec 1 §1 calls giving an agent eyes. The protocol asking for
+a string is the reason this fits, not the reason it does not. What would
+be mangling is base64 — which is precisely what the *built-in*
+`FilesystemBackend` does today with a photograph.
+
+Cost if this ruling is wrong: one extra-guarded module and its tests are
+deleted, and layer one is unaffected.
+
+The design:
+
+- `MediaAwareBackend` **wraps** a caller-supplied `BackendProtocol`
+  (defaulting to deepagents' own `FilesystemBackend`) and delegates
+  `ls`, `glob`, `grep`, and `write` to it untouched. This resolves the
+  read-only conflict by composition rather than by refusing a method: a
+  library that does not write does not need to prevent the wrapped
+  backend from writing.
+- It overrides `read`/`aread` only. For a path whose detected mimetype
+  has a handler offering better than raw bytes, it returns
+  `perception.represent(uri, budget)`'s text. Otherwise it delegates.
+- `offset` and `limit` map onto `Budget`, so deepagents' own paging
+  contract is honoured rather than ignored.
+- `aread` is implemented natively rather than inheriting the
+  `to_thread` default, because `Perception` is already async and
+  thread-wrapping an async pipeline would be a defect.
+
+### 7.4 Rules
 
 - `deepagents` is imported in exactly one module, guarded by its extra,
-  and the layered import contract is extended to keep it there.
+  and the layered import contract is extended to keep it there — the
+  same confinement `tools.py` already gives `langchain`.
 - Nothing in `domain`, `ports`, `adapters`, `handlers`, `registry`, or
   `pipeline` learns that deepagents exists.
 - If the extra is absent, every other part of the library works
-  unchanged.
+  unchanged, including layer one.
+- The extra pins `deepagents>=0.7,<0.8`. Their surface moves fast, and
+  an unpinned dependency on a fast-moving 0.x is how a library acquires
+  breakage it did not choose.
+- An integration test constructs `MediaAwareBackend` against the real
+  `BackendProtocol` so that API drift fails loudly and locally rather
+  than silently in a user's agent.
+- **Layer two is ordered last in the plan.** If it proves troublesome it
+  is dropped without endangering anything else in this spec.
 
 ---
 
@@ -512,7 +562,17 @@ This spec is satisfied when:
    `Perception` with no import error.
 6. Every defect in §8 is closed, each with a test that fails without its
    fix.
-7. All five existing gates stay green, with the coverage floor at 92%.
+7. The README documents composing `build_tools` with `create_deep_agent`
+   (§7.3 layer one), and that composition is exercised by a test. This
+   is required.
+8. All five existing gates stay green, with the coverage floor at 92%.
+
+`MediaAwareBackend` (§7.3 layer two) is deliberately **not** an
+acceptance criterion. It is the spec's most valuable single piece and
+its most exposed to a dependency outside this project's control. It
+ships if it lands cleanly; the spec is satisfied without it, and if it
+is dropped the reason is recorded rather than the criterion quietly
+weakened.
 
 ---
 
@@ -520,7 +580,7 @@ This spec is satisfied when:
 
 | Risk | Mitigation |
 | --- | --- |
-| The deepagents API is not what §7 assumes | §7.2 makes verification a plan task with two pre-authorised outcomes, so neither is a stall. |
+| The deepagents API changes under us | §7.2 is verified against the installed 0.7.6, not documentation. The extra pins `<0.8`, the surface is one module, and an integration test against the real `BackendProtocol` makes drift fail locally. Layer one survives any drift because it depends only on `langchain_core`. |
 | Cache wiring introduces a stale-result bug — the worst class of bug this library could ship | Two caches with separate invalidation rules (§3.2); the content-addressed one never invalidates. Integration tests assert hit and miss are indistinguishable, and that a rewritten file produces a fresh ref. |
 | Capability probing executes subprocesses, a new risk surface | Probes run fixed version flags on located executables, never caller-supplied strings; hard timeout; never raise. Bandit stays in the gate set. |
 | The composition root becomes a god-function that grows with every handler | Its contract (§5.3) is that it may do nothing the public constructors cannot. It is tested as a convenience over them, not as a separate path. |
