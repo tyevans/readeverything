@@ -64,12 +64,12 @@ files = ["src", "tests"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 markers = [
-    "integration: requires OS binaries",
+    "integration: real components wired together; no network, no model server",
     "live: requires a running model server",
     "accuracy: quality benchmark, not a pass/fail test",
     "slow: takes more than a second",
 ]
-addopts = "-m 'not integration and not live and not accuracy'"
+addopts = "-m 'not live and not accuracy'"
 
 [tool.importlinter]
 root_packages = ["readeverything"]

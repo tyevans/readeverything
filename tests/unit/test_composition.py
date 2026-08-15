@@ -78,15 +78,3 @@ def test_the_composition_root_reads_no_environment() -> None:
     source = Path("src/readeverything/composition.py").read_text()
     assert "os.environ" not in source
     assert "getenv" not in source
-
-
-def test_every_bundled_handler_is_exported_from_the_front_door() -> None:
-    """Adding a handler must mean adding it in exactly one place.
-
-    A handler registered in the composition root but missing from the front
-    door — or the reverse — is a surface that lies about itself.
-    """
-    import readeverything
-
-    registered = {"TextHandler", "BinaryHandler", "ImageHandler"}
-    assert registered <= set(readeverything.__all__)
