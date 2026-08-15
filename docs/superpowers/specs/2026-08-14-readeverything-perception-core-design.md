@@ -387,16 +387,35 @@ Upstream a change to redstring **only if it can be justified with a purely-text
 example**. If the change requires redstring to know what a pixel or a second is,
 it stays here.
 
-### Prerequisite RFC (three changes, all text-defensible)
+### Prerequisite RFC
 
-1. **Opaque provenance surviving chunking.** A caller-defined payload on
-   `SourceDocument` that is carried onto each `Chunk`. Text-only justification: a
-   web page needs a DOM path, a PDF needs a page number. redstring must never
-   inspect the payload.
-2. **Hard chunk barriers.** redstring has `boundary_preference_chunker`; what is
-   missing is offsets it must *not* split across. Text-only justification: do not
-   merge two chapters into one chunk.
-3. **Provenance on retrieval results.** Without it, (1) is unusable.
+Specified in full at `docs/rfcs/0001-source-spans-carry-caller-provenance.md`.
+
+Investigation of redstring's actual code collapsed the three changes originally
+scoped here into **one new concept**: a `SourceDocument` may carry `spans` —
+sorted, non-overlapping character ranges over its own text, each with an opaque
+payload and an optional `barrier` flag. From that single addition all three
+follow.
+
+Three findings drove the collapse:
+
+- `StoredChunk.metadata` already exists and round-trips through the postgres
+  `jsonb` column, but `extraction/corpus.py::build_stored_chunks` never
+  populates it from `Chunk.metadata`. The channel is plumbed end to end and
+  structurally unreachable.
+- Retrieval already returns `StoredChunk`s via `ScoredChunk`, so provenance at
+  retrieval needs a test rather than an implementation.
+- The real blocker is that a caller cannot annotate chunks it does not create.
+  redstring chunks internally from `SourceDocument.text`, and
+  `SourceDocument.metadata` is document-scoped — the granularity that makes a
+  citation useless.
+
+One consequence propagates into this library's design: because `chunk_id` is
+content-addressed on text, identical passages collapse to one chunk, so
+provenance is **multi-valued**. Payloads accumulate in document order, mirroring
+how `entity_ids` already accumulates. `LocatorMap.resolve_span()` therefore
+returns a tuple of locators, and citation rendering must handle a passage with
+several origins — the repeated-transcript-cue and repeated-PDF-footer cases.
 
 No new dependencies, no new ports, and redstring remains pure and text-only.
 
