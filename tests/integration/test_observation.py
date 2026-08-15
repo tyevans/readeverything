@@ -149,7 +149,7 @@ async def test_observing_changes_nothing(media_root: Path) -> None:
 
 
 async def test_a_videos_frames_are_reported_as_progress(tmp_path: Path) -> None:
-    """"Each frame complete" is a claim only `OperationProgressed` can settle."""
+    """Only `OperationProgressed` can settle the claim that each frame reports."""
     (tmp_path / "clip.mp4").write_bytes(_MP4_HEADER + bytes(512))
     recorder = RecordingObserver()
     perception = _video_perception(tmp_path, recorder)

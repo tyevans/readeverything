@@ -14,15 +14,51 @@ pip install deepagents-read-everything
 
 ## Use it
 
-```python
-from readeverything import build_perception, build_tools
+<!-- readeverything:tested -->
+<!-- The block below is compiled and executed by
+     tests/integration/test_readme_example.py, which injects `root` (a
+     temporary directory holding notes.txt) into its namespace and asserts on
+     the names it leaves behind (`card`, `tools`). Exactly one block in this
+     file may carry the marker above. Edit the example freely — but it has to
+     keep running. -->
 
-perception = await build_perception(root)
+```python
+from readeverything import (
+    Budget,
+    Capability,
+    SemaphoreLimiter,
+    build_perception,
+    build_tools,
+)
+
+
+class Narrate:
+    """An observer: anything with `observe(event)`. Yours can do better than print."""
+
+    def observe(self, event):
+        print(f"{type(event).__name__}: {event.operation} on {event.ref.uri}")
+
+
+perception = await build_perception(
+    root,
+    # Watch a long read as it happens — started, progressed, finished — and
+    # never let more than four vision calls run at once.
+    observer=Narrate(),
+    limiter=SemaphoreLimiter({Capability.VISION: 4}),
+)
 card = await perception.inspect("notes.txt")
 tools = build_tools(perception)
+
+# Narrate() sees this read start and finish; a video would report each frame.
+rendered = await perception.represent("notes.txt", Budget(max_chars=None))
 ```
 
-That's it — three lines. `build_perception` walks `root` and wires up
+Drop the `observer` and `limiter` arguments and it is three lines; with them,
+a caller can see which file a slow read is on and bound how hard it leans on a
+vision endpoint. An observer never changes what a read returns, and one that
+raises cannot fail the read.
+
+`build_perception` walks `root` and wires up
 detection, hashing, and the handler registry. `card` describes what the file
 is (`card.kind`, e.g. `"text"`) and what you can do with it (`card.affordances`,
 a tuple of `Affordance` objects — `[a.name for a in card.affordances]` gives
@@ -98,6 +134,5 @@ pip install "deepagents-read-everything[langchain]"  # langchain-core only, no O
 ```
 
 On a machine with none of these installed — no Pillow, no vision client, no
-model server running anywhere — the three-line example at the top still
-works: text is still read, and every other file still gets a locator-carrying
+model server running anywhere — the example at the top still works: text is still read, and every other file still gets a locator-carrying
 hex dump.
