@@ -643,7 +643,7 @@ import.
 
 ### Reference model deployment
 
-OpenAI-compatible endpoint at `http://192.168.1.14/v1/`, model
+OpenAI-compatible endpoint at `http://192.168.1.14:8080/v1/`, model
 `qwen3.8-27b-mtp` (multimodal: images and video, documents, STEM diagrams,
 long-form video).
 

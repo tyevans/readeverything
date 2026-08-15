@@ -716,7 +716,7 @@ from readeverything.adapters.vision_langchain import (
     build_openai_vision_model,
 )
 
-DEFAULT_BASE_URL = "http://192.168.1.14/v1/"
+DEFAULT_BASE_URL = "http://192.168.1.14:8080/v1/"
 DEFAULT_MODEL = "qwen3.8-27b-mtp"
 
 

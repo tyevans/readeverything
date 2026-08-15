@@ -9,7 +9,10 @@ identity feeding the cache key is real — not that the model describes anything
 well. Description quality is a bench concern, not a test.
 """
 
+import io
+
 import pytest
+from PIL import Image
 
 from readeverything.adapters.cache_key import artifact_key
 from readeverything.adapters.vision_langchain import LangChainVisionModel
@@ -18,18 +21,27 @@ from readeverything.domain.identity import ContentHash
 
 pytestmark = pytest.mark.live
 
-#: A 1x1 red PNG. Small enough that a failure is the endpoint, not the payload.
-RED_PIXEL_PNG = bytes.fromhex(
-    "89504e470d0a1a0a0000000d4948445200000001000000010806000000"
-    "1f15c4890000000d49444154789c636060f80f000101010018dd8db000"
-    "00000049454e44ae426082"
-)
+
+def _red_square_png() -> bytes:
+    """A plain 64x64 red PNG.
+
+    Deliberately not a 1x1 pixel: a real server's image loader rejects a
+    degenerate image before the model ever sees it, which would make a
+    payload failure look like an endpoint failure. Small and uniform is
+    the property this fixture wants; single-pixel is not.
+    """
+    buffer = io.BytesIO()
+    Image.new("RGB", (64, 64), (200, 0, 0)).save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+RED_SQUARE_PNG = _red_square_png()
 
 
 async def test_the_endpoint_answers_with_text(live_vision: LangChainVisionModel) -> None:
     """The transport works and the model accepts an inlined image."""
     answer = await live_vision.describe(
-        RED_PIXEL_PNG, "image/png", "Describe this image in one short sentence."
+        RED_SQUARE_PNG, "image/png", "Describe this image in one short sentence."
     )
     assert answer.strip()
 
@@ -42,7 +54,7 @@ async def test_the_answer_is_not_an_echo_of_the_prompt(
     That would pass a bare truthiness check while proving nothing about vision.
     """
     prompt = "Describe this image in one short sentence."
-    answer = await live_vision.describe(RED_PIXEL_PNG, "image/png", prompt)
+    answer = await live_vision.describe(RED_SQUARE_PNG, "image/png", prompt)
     assert answer.strip() != prompt
 
 
