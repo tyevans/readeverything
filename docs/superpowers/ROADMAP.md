@@ -112,6 +112,29 @@ difference is intentional — a probe may fail loudly, a handler must never rais
 — and both docstrings now say so. Worth revisiting only if a third opener
 appears.
 
+## Owed, discovered during Cycle 7
+
+**Observer emission from `invoke()`, with cache hits distinguishable from real
+model calls.** Spec §7 asks "How many model calls did indexing this directory
+actually make?" and **nothing in this library can answer it.** Cycle 7 wired
+`Observer` into all six handlers' `represent()`, and that is genuinely useful,
+but it is a different question: a `represent()` start/finish pair says a file
+was represented, not that a model was consulted. Every affordance invocation —
+`describe_image`, `ocr`, `ocr_page`, `describe_frame` — is silent, and those are
+where the model calls actually happen.
+
+This was deliberately not fixed alongside the rest of Cycle 7's observability,
+because it is design work rather than instrumentation. Affordance invocation
+goes through a content-addressed artifact cache, so an emission wrapped naively
+around `invoke()` would count a cache hit as a model call and give a caller a
+number that is wrong in the direction that matters most — the whole point of the
+cache is that the second read costs nothing, and a counter that cannot see that
+is worse than no counter. The event vocabulary needs a way to distinguish "a
+model was called" from "an artifact was served", and that belongs in its own
+cycle with its own spec.
+
+Until then: **no document should claim §7 is answerable.**
+
 ## Open questions the research must settle
 
 - **redstring**: is it the retrieval substrate, does it need RFC 0001 landed
@@ -179,6 +202,17 @@ binary 0, image 0, pdf 0, audio 3, video 3. Two of six handlers spoke. The spec
 had contradicted itself again — §2.4 scoped emission to "both expensive paths,
 video and audio" while §7 promised the caller could count *model calls*, which
 `ImageHandler` and `PdfHandler`'s OCR path make and neither reported.
+
+**And the correction did not close §7.** All six handlers now emit from
+`represent()`, but a `represent()` event is not a model call and must not be
+read as one: it says a file's representation started or finished, nothing about
+whether a model was consulted along the way. **§7's question — "How many model
+calls did indexing this directory actually make?" — remains unanswerable**, and
+any ruling of this loop that said otherwise was wrong. No `invoke()` path emits
+at all: `describe_image`, `ocr`, `ocr_page` and `describe_frame` are silent. See
+"Owed, discovered during Cycle 7" below. This paragraph exists because the same
+loop that named prose-decay as its own recurring defect committed it again in
+the ruling that named it.
 
 The specific lesson, distinct from prior cycles: **an acceptance sentence is a
 claim about code too.** §1.1 was written before the handlers existed, was never

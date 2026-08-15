@@ -87,7 +87,9 @@ class _CancelledObserver:
         (_CancelledObserver(), asyncio.CancelledError),
     ],
 )
-def test_emit_does_not_contain_a_stop_signal(observer: object, escaping: type[BaseException]) -> None:
+def test_emit_does_not_contain_a_stop_signal(
+    observer: object, escaping: type[BaseException]
+) -> None:
     """The other half of the rule, and the half nothing was holding.
 
     `emit` suppresses `Exception`, not `BaseException`, and until this test
