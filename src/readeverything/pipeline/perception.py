@@ -20,6 +20,7 @@ from readeverything.domain.card import Card
 from readeverything.domain.errors import UnknownAffordanceError
 from readeverything.domain.identity import SourceRef
 from readeverything.domain.rendition import Budget, Rendered, Rendition
+from readeverything.pipeline.resolution import ResolutionMemo, stat_key
 from readeverything.ports.artifacts import ArtifactStore
 from readeverything.ports.detection import MimeDetector
 from readeverything.ports.handler import MediaHandler
@@ -41,21 +42,31 @@ class Perception:
         hasher: ContentHashing,
         registry: MimeTypeRegistry,
         artifacts: ArtifactStore,
+        memo: ResolutionMemo | None = None,
     ) -> None:
         self._source = source
         self._detector = detector
         self._hasher = hasher
         self._registry = registry
         self._artifacts = artifacts
+        self._memo = memo
 
     async def _ref(self, uri: str) -> SourceRef:
+        key = None if self._memo is None else await stat_key(self._source, uri)
+        if self._memo is not None:
+            cached = self._memo.get(uri, key)
+            if cached is not None:
+                return cached
         head = await self._source.read_range(uri, 0, _HEAD_BYTES)
-        return SourceRef(
+        ref = SourceRef(
             uri=uri,
             mime=await self._detector.detect(uri, head),
             content_hash=await self._hasher.hash(uri),
             size_bytes=await self._source.size(uri),
         )
+        if self._memo is not None:
+            self._memo.put(uri, key, ref)
+        return ref
 
     async def _resolve(self, uri: str) -> tuple[SourceRef, MediaHandler]:
         ref = await self._ref(uri)
