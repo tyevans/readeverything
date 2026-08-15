@@ -1,4 +1,5 @@
 import pytest
+from tests.fixtures_media import audio_only_m4a, ffmpeg_available, video_with_audio
 
 from readeverything.adapters.detection import PuremagicDetector
 from readeverything.domain.identity import MimeType
@@ -31,6 +32,33 @@ async def test_empty_content_is_octet_stream() -> None:
     assert await PuremagicDetector().detect("empty", b"") == MimeType.parse(
         "application/octet-stream"
     )
+
+
+@pytest.mark.skipif(not ffmpeg_available(), reason="ffmpeg not installed")
+async def test_an_audio_only_m4a_is_detected_as_audio() -> None:
+    """m4a and mp4 are the same container, byte-identical at the header, so
+    magic reports video/mp4 for both. Only the extension distinguishes them, and
+    an audio file that dispatches to the video handler never reaches the handler
+    built to read it.
+    """
+    mime = await PuremagicDetector().detect("voice-memo.m4a", audio_only_m4a())
+    assert str(mime).startswith("audio/")
+
+
+@pytest.mark.skipif(not ffmpeg_available(), reason="ffmpeg not installed")
+async def test_an_mp4_video_is_still_detected_as_video() -> None:
+    """The narrow rule must not swallow the common case: a real .mp4 with a
+    video stream, whose extension guesses video/mp4 too, stays video."""
+    mime = await PuremagicDetector().detect("clip.mp4", video_with_audio())
+    assert str(mime) == "video/mp4"
+
+
+async def test_a_png_named_txt_is_still_a_png() -> None:
+    """The reasoning the module docstring already gives, guarded. Content beats
+    filename in general; this fix carves out one container ambiguity, not a
+    reordering."""
+    detected = await PuremagicDetector().detect("photo.txt", PNG_HEADER)
+    assert detected.type == "image"
 
 
 async def test_a_detector_whose_library_raises_still_returns_a_mimetype(

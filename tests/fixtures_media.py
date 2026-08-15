@@ -95,6 +95,28 @@ def audio_only(seconds: int = 3) -> bytes:
         )
 
 
+def audio_only_m4a(seconds: int = 3) -> bytes:
+    """An AAC-in-mp4-container audio file with no video stream.
+
+    `.m4a` and `.mp4` are byte-identical at the header (same ISO BMFF
+    container), so magic detection alone cannot distinguish an audio-only
+    `.m4a` from a video `.mp4` — only the filename extension can.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        out_path = Path(tmp) / "audio_only.m4a"
+        return _run_ffmpeg(
+            [
+                "-f",
+                "lavfi",
+                "-i",
+                f"sine=frequency=440:duration={seconds}",
+                "-c:a",
+                "aac",
+            ],
+            out_path,
+        )
+
+
 def scene_cuts(seconds_each: int = 2) -> bytes:
     """Two visually distinct segments concatenated, so a cut is detectable.
 
