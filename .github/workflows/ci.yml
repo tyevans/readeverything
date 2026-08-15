@@ -105,6 +105,19 @@ jobs:
           python-version: '3.13'
           enable-cache: true
       - run: uv sync --all-extras
+
+      # `ubuntu-latest` does not ship ffmpeg. The audio and video handlers
+      # shell out to `ffmpeg`/`ffprobe`, and `tests/fixtures_media.py` builds
+      # its sample media with them, so without this the media tests error at
+      # fixture setup rather than skipping -- and the coverage floor then fails
+      # for a reason that has nothing to do with coverage. That is exactly how
+      # this job failed on its first run: 87% and a wall of FileNotFoundError.
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          ffmpeg -version | head -1
+
       # The coverage floor lives in `[tool.coverage.report] fail_under`, so
       # `--cov` alone is the gate.
       - run: uv run pytest --cov --cov-report=term-missing
