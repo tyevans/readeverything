@@ -1,23 +1,23 @@
+from pathlib import Path
+
+from readeverything.adapters.local_source import LocalFileSource
 from readeverything.ports.artifacts import ArtifactStore
-from readeverything.ports.detection import MimeDetector
-from readeverything.ports.handler import MediaHandler
 from readeverything.ports.source import FileSource, SourceLister, SourceReader, SourceStat
 
-PORTS = [
-    ArtifactStore,
-    MimeDetector,
-    MediaHandler,
-    FileSource,
-    SourceLister,
-    SourceReader,
-    SourceStat,
-]
 
-
-def test_every_port_is_runtime_checkable() -> None:
+def test_a_real_adapter_satisfies_its_port_structurally(tmp_path: Path) -> None:
     """Structural typing is the point: an adapter must not have to inherit."""
-    for port in PORTS:
-        assert hasattr(port, "_is_runtime_protocol"), f"{port.__name__} is not runtime_checkable"
+    source = LocalFileSource(root=tmp_path)
+    assert isinstance(source, SourceStat)
+    assert isinstance(source, SourceReader)
+    assert isinstance(source, SourceLister)
+    assert isinstance(source, FileSource)
+
+
+def test_an_unrelated_object_does_not_satisfy_a_port() -> None:
+    """...and the check must be able to say no."""
+    assert not isinstance(object(), FileSource)
+    assert not isinstance(object(), ArtifactStore)
 
 
 def test_file_source_composes_the_narrow_slices() -> None:

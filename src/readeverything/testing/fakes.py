@@ -46,7 +46,8 @@ class FakeSource:
         raise NotImplementedError("FakeSource has no local path; use a tmp_path fixture")
 
     async def walk(self, uri: str) -> Sequence[str]:
-        return sorted(self._files)
+        prefix = "" if uri in (".", "") else uri.rstrip("/") + "/"
+        return sorted(path for path in self._files if path.startswith(prefix))
 
 
 class FakeVision:

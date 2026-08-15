@@ -21,6 +21,8 @@ if TYPE_CHECKING:
     from readeverything.adapters.hashing import ContentHasher as ContentHasher
     from readeverything.adapters.hashing import StatMemo as StatMemo
     from readeverything.adapters.local_source import LocalFileSource as LocalFileSource
+    from readeverything.agent.results import ToolResult as ToolResult
+    from readeverything.agent.tools import build_tools as build_tools
     from readeverything.domain.affordance import Affordance as Affordance
     from readeverything.domain.affordance import DetailLevel as DetailLevel
     from readeverything.domain.capability import Capability as Capability
@@ -58,11 +60,28 @@ if TYPE_CHECKING:
     from readeverything.handlers.binary import BinaryHandler as BinaryHandler
     from readeverything.handlers.text import TextHandler as TextHandler
     from readeverything.pipeline.perception import Perception as Perception
+    from readeverything.ports.artifacts import ArtifactStore as ArtifactStore
+    from readeverything.ports.detection import MimeDetector as MimeDetector
+    from readeverything.ports.handler import MediaHandler as MediaHandler
+    from readeverything.ports.source import FileSource as FileSource
+    from readeverything.ports.source import SourceReader as SourceReader
     from readeverything.registry.registry import MimeTypeRegistry as MimeTypeRegistry
     from readeverything.registry.registry import NoHandlerError as NoHandlerError
+    from readeverything.testing.artifact_compliance import (
+        ArtifactStoreCompliance as ArtifactStoreCompliance,
+    )
+    from readeverything.testing.fakes import FakeDiarizer as FakeDiarizer
+    from readeverything.testing.fakes import FakeSource as FakeSource
+    from readeverything.testing.fakes import FakeTranscriber as FakeTranscriber
+    from readeverything.testing.fakes import FakeVision as FakeVision
+    from readeverything.testing.handler_compliance import (
+        MediaHandlerCompliance as MediaHandlerCompliance,
+    )
 
 _LAZY: dict[str, str] = {
     "Affordance": "readeverything.domain.affordance",
+    "ArtifactStore": "readeverything.ports.artifacts",
+    "ArtifactStoreCompliance": "readeverything.testing.artifact_compliance",
     "BBox": "readeverything.domain.locators",
     "BinaryHandler": "readeverything.handlers.binary",
     "Budget": "readeverything.domain.rendition",
@@ -77,6 +96,11 @@ _LAZY: dict[str, str] = {
     "Degradation": "readeverything.domain.rendition",
     "DetailLevel": "readeverything.domain.affordance",
     "DomainError": "readeverything.domain.errors",
+    "FakeDiarizer": "readeverything.testing.fakes",
+    "FakeSource": "readeverything.testing.fakes",
+    "FakeTranscriber": "readeverything.testing.fakes",
+    "FakeVision": "readeverything.testing.fakes",
+    "FileSource": "readeverything.ports.source",
     "FilesystemArtifactStore": "readeverything.adapters.artifact_store",
     "ImageContent": "readeverything.domain.rendition",
     "InMemoryArtifactStore": "readeverything.adapters.artifact_store",
@@ -84,7 +108,10 @@ _LAZY: dict[str, str] = {
     "LocalFileSource": "readeverything.adapters.local_source",
     "LocatorMap": "readeverything.domain.locator_map",
     "LocatorSegment": "readeverything.domain.locator_map",
+    "MediaHandler": "readeverything.ports.handler",
+    "MediaHandlerCompliance": "readeverything.testing.handler_compliance",
     "MediaKind": "readeverything.domain.identity",
+    "MimeDetector": "readeverything.ports.detection",
     "MimeType": "readeverything.domain.identity",
     "MimeTypeRegistry": "readeverything.registry.registry",
     "NoHandlerError": "readeverything.registry.registry",
@@ -95,6 +122,7 @@ _LAZY: dict[str, str] = {
     "Rendered": "readeverything.domain.rendition",
     "Rendition": "readeverything.domain.rendition",
     "Segment": "readeverything.domain.card",
+    "SourceReader": "readeverything.ports.source",
     "SourceRef": "readeverything.domain.identity",
     "SourceUnreadableError": "readeverything.domain.errors",
     "SpeakerId": "readeverything.domain.rendition",
@@ -103,8 +131,10 @@ _LAZY: dict[str, str] = {
     "TextContent": "readeverything.domain.rendition",
     "TextHandler": "readeverything.handlers.text",
     "TimeSpan": "readeverything.domain.locators",
+    "ToolResult": "readeverything.agent.results",
     "TranscriptCue": "readeverything.domain.rendition",
     "UnknownAffordanceError": "readeverything.domain.errors",
+    "build_tools": "readeverything.agent.tools",
 }
 
 __all__ = sorted(_LAZY)

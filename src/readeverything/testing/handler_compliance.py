@@ -13,7 +13,13 @@ from readeverything.domain.rendition import Budget
 
 
 class MediaHandlerCompliance:
-    """Laws a handler must satisfy to be usable by the registry."""
+    """Laws a handler must satisfy to be usable by the registry.
+
+    Your source must be able to serve the SAME content at a second uri,
+    "somewhere/else": `test_describe_depends_only_on_content` describes a ref
+    pointing there to prove the card does not vary with the path. A source
+    that cannot will raise rather than fail the law.
+    """
 
     @pytest.fixture
     def handler(self) -> object:
@@ -78,8 +84,19 @@ class MediaHandlerCompliance:
         assert rendered.locator_map.length == len(rendered.text)
 
     async def test_represent_respects_a_budget_or_reports_degradation(self, handler, ref) -> None:  # type: ignore[no-untyped-def]
-        """Truncation must be announced. Silent truncation is invisible in
-        exactly the case where the answer is wrong."""
+        """Truncation must be announced, and announcements must be truthful.
+
+        Comparing against an unbounded render closes both directions: text
+        shorter than unbounded REQUIRES a degradation, and text equal to
+        unbounded FORBIDS a spurious one. The previous `permits(...) or
+        degradations` form was satisfiable by a handler that truncated
+        silently and by one that cried wolf without truncating.
+        """
+        unbounded = await handler.represent(ref, Budget(max_chars=None))
         budget = Budget(max_chars=10)
         rendered = await handler.represent(ref, budget)
-        assert budget.permits(len(rendered.text)) or rendered.degradations
+        assert budget.permits(len(rendered.text))
+        if len(rendered.text) < len(unbounded.text):
+            assert rendered.degradations, "truncated without reporting a degradation"
+        else:
+            assert not rendered.degradations, "reported a degradation without truncating"

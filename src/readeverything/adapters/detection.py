@@ -34,7 +34,13 @@ class PuremagicDetector:
         if not head:
             return _OCTET_STREAM
 
-        for match in puremagic.magic_string(head):
+        try:
+            matches = puremagic.magic_string(head)
+        except Exception:
+            # The octet-stream tail below is what makes "there is no
+            # unsupported file" true, so nothing may prevent reaching it.
+            matches = []
+        for match in matches:
             if match.mime_type:
                 try:
                     return MimeType.parse(match.mime_type)
@@ -43,7 +49,10 @@ class PuremagicDetector:
 
         guessed, _ = mimetypes.guess_type(uri)
         if guessed:
-            return MimeType.parse(guessed)
+            try:
+                return MimeType.parse(guessed)
+            except ValueError:
+                pass
 
         try:
             head.decode("utf-8")

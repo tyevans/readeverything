@@ -47,6 +47,11 @@ class InvokeParams(BaseModel):
     )
 
 
+def _render_validation_error(exc: Exception) -> str:
+    """Malformed tool arguments must read like any other failure, not a traceback."""
+    return f"ERROR ({type(exc).__name__}): {exc}"
+
+
 def _render_card(card: Card) -> str:
     return json.dumps(
         {
@@ -81,6 +86,8 @@ def _render_rendition(rendition: Rendition) -> str:
             body = json.dumps(list(rows), indent=2)
         case ImageContent(data=data, mime=mime):
             body = f"[{mime} image, {len(data)} bytes — pass to a vision tool to read it]"
+        case _:
+            body = f"[unrenderable content: {type(rendition.content).__name__}]"
     marker = " (degraded)" if rendition.degraded else ""
     return f"located at {rendition.locator!r}{marker}:\n{body}"
 
@@ -122,12 +129,14 @@ def build_tools(perception: Perception) -> list[BaseTool]:
                 "Cheap: it never runs a model over the whole file."
             ),
             args_schema=InspectParams,
+            handle_validation_error=_render_validation_error,
         ),
         StructuredTool.from_function(
             coroutine=_list,
             name="list_paths",
             description="List every file under a directory, recursively.",
             args_schema=ListParams,
+            handle_validation_error=_render_validation_error,
         ),
         StructuredTool.from_function(
             coroutine=_invoke,
@@ -140,5 +149,6 @@ def build_tools(perception: Perception) -> list[BaseTool]:
                 "they came from."
             ),
             args_schema=InvokeParams,
+            handle_validation_error=_render_validation_error,
         ),
     ]

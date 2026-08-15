@@ -23,4 +23,4 @@ sec:
 	$(UV) pip-audit
 
 test:
-	$(UV) pytest
+	$(UV) pytest --cov --cov-report=term-missing

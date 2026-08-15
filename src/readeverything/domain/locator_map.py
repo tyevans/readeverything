@@ -51,9 +51,9 @@ class LocatorMap:
         for i in range(len(self.segments) - 1):
             if self.segments[i].span.start >= self.segments[i + 1].span.start:
                 raise ValueError(
-                    f"segments must be sorted and gapless: expected a segment starting at "
-                    f"{self.segments[i].span.end}, got one starting at "
-                    f"{self.segments[i + 1].span.start}"
+                    f"segments must be sorted and gapless: segment {i + 1} starts at "
+                    f"{self.segments[i + 1].span.start}, which is not after segment "
+                    f"{i} at {self.segments[i].span.start}"
                 )
         # Check that segments start at 0 and are gapless
         if self.segments[0].span.start != 0:

@@ -16,7 +16,14 @@ from collections.abc import Iterable
 
 
 class ReadEverythingError(Exception):
-    """Root of every error this library raises."""
+    """Root of the errors this library raises deliberately.
+
+    Not every exception: value objects raise `ValueError` from their own
+    validation, handlers raise `TypeError` on a params-type mismatch that
+    signals a wiring bug, and pydantic's `ValidationError` surfaces from
+    schema validation. The tool pack catches `Exception`, so an agent sees
+    all of them as structured results regardless.
+    """
 
 
 class DomainError(ReadEverythingError):

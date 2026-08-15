@@ -71,3 +71,22 @@ async def test_invoking_an_unavailable_affordance_returns_an_error(
     output = await tool.ainvoke({"uri": "notes.txt", "affordance": "hexdump", "params": {}})
     assert "ERROR" in output
     assert "read_range" in output  # the error names what IS available
+
+
+async def test_a_missing_required_argument_returns_an_error_string(
+    perception: Perception,
+) -> None:
+    """Model-authored arguments are untrusted input; they must not raise."""
+    tool = next(t for t in build_tools(perception) if t.name == "inspect_path")
+    output = await tool.ainvoke({})
+    assert "ERROR" in output
+
+
+async def test_a_wrongly_typed_argument_returns_an_error_string(
+    perception: Perception,
+) -> None:
+    tool = next(t for t in build_tools(perception) if t.name == "invoke_affordance")
+    output = await tool.ainvoke(
+        {"uri": "notes.txt", "affordance": "read_range", "params": "not-a-dict"}
+    )
+    assert "ERROR" in output

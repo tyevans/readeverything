@@ -22,7 +22,13 @@ from readeverything.domain.errors import UnknownAffordanceError
 from readeverything.domain.identity import MediaKind, SourceRef
 from readeverything.domain.locator_map import LocatorMap, LocatorSegment
 from readeverything.domain.locators import ByteRange, CharSpan
-from readeverything.domain.rendition import Budget, Rendered, Rendition, TextContent
+from readeverything.domain.rendition import (
+    Budget,
+    Degradation,
+    Rendered,
+    Rendition,
+    TextContent,
+)
 from readeverything.ports.source import SourceReader
 
 _EXCERPT_BYTES = 64
@@ -99,17 +105,27 @@ class BinaryHandler:
         )
 
     async def represent(self, ref: SourceRef, budget: Budget) -> Rendered:
-        text = (
+        full = (
             f"Binary file {ref.uri} of type {ref.mime}, {ref.size_bytes} bytes. "
             f"No textual content could be extracted."
         )
-        if budget.max_chars is not None:
-            text = text[: budget.max_chars] or text[:1]
+        text = full
+        degradations: tuple[Degradation, ...] = ()
+        if budget.max_chars is not None and len(full) > budget.max_chars:
+            degradations = (
+                Degradation(
+                    what="text truncated",
+                    detail=f"kept {budget.max_chars} of {len(full)} characters",
+                ),
+            )
+            text = full[: budget.max_chars]
+        if not text:
+            text = full[:1]
         return Rendered(
             text=text,
             locator_map=LocatorMap.build(
                 (LocatorSegment(CharSpan(0, len(text)), ByteRange(0, max(1, ref.size_bytes))),)
             ),
             barriers=(),
-            degradations=(),
+            degradations=degradations,
         )
