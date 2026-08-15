@@ -1,0 +1,94 @@
+import pytest
+
+from readeverything.domain.errors import UnknownAffordanceError
+from readeverything.domain.identity import ContentHash, MediaKind, MimeType, SourceRef
+from readeverything.domain.locators import CharSpan
+from readeverything.domain.rendition import Budget, TextContent
+from readeverything.handlers.text import ReadRangeParams, TextHandler
+from readeverything.testing.fakes import FakeSource
+from readeverything.testing.handler_compliance import MediaHandlerCompliance
+
+CONTENT = b"alpha\nbeta\ngamma\n"
+
+
+def _ref() -> SourceRef:
+    return SourceRef(
+        uri="a.txt",
+        mime=MimeType.parse("text/plain"),
+        content_hash=ContentHash("a" * 64),
+        size_bytes=len(CONTENT),
+    )
+
+
+def _handler() -> TextHandler:
+    return TextHandler(source=FakeSource({"a.txt": CONTENT, "somewhere/else": CONTENT}))
+
+
+async def test_the_card_reports_line_and_character_counts() -> None:
+    card = await _handler().describe(_ref())
+    assert card.kind is MediaKind.TEXT
+    assert card.facts["lines"] == 3
+    assert card.facts["characters"] == len(CONTENT.decode())
+    assert card.facts["encoding"] == "utf-8"
+
+
+async def test_the_card_excerpt_is_bounded() -> None:
+    long = ("x" * 5000).encode()
+    handler = TextHandler(source=FakeSource({"a.txt": long}))
+    ref = SourceRef(
+        uri="a.txt",
+        mime=MimeType.parse("text/plain"),
+        content_hash=ContentHash("b" * 64),
+        size_bytes=len(long),
+    )
+    card = await handler.describe(ref)
+    assert card.excerpt is not None
+    assert len(card.excerpt) <= 1000
+
+
+async def test_read_range_returns_the_requested_characters_and_its_locator() -> None:
+    rendition = await _handler().invoke(_ref(), "read_range", ReadRangeParams(start=6, end=10))
+    assert isinstance(rendition.content, TextContent)
+    assert rendition.content.text == "beta"
+    assert isinstance(rendition.locator, CharSpan)
+    assert rendition.locator.start == 6
+    assert rendition.locator.end == 10
+
+
+async def test_read_range_clamps_to_the_end_of_the_text() -> None:
+    rendition = await _handler().invoke(_ref(), "read_range", ReadRangeParams(start=12, end=9999))
+    assert isinstance(rendition.content, TextContent)
+    assert rendition.content.text == "amma\n"
+
+
+async def test_an_unknown_affordance_raises() -> None:
+    with pytest.raises(UnknownAffordanceError, match="read_range"):
+        await _handler().invoke(_ref(), "nope", ReadRangeParams(start=0, end=1))
+
+
+async def test_represent_maps_the_whole_text_with_line_barriers() -> None:
+    rendered = await _handler().represent(_ref(), Budget(max_chars=None))
+    assert rendered.text == CONTENT.decode()
+    assert rendered.locator_map.length == len(rendered.text)
+    assert rendered.barriers == ()
+
+
+async def test_represent_truncates_and_says_so() -> None:
+    rendered = await _handler().represent(_ref(), Budget(max_chars=5))
+    assert len(rendered.text) == 5
+    assert rendered.degradations
+    assert "truncated" in rendered.degradations[0].what
+
+
+class TestTextHandlerCompliance(MediaHandlerCompliance):
+    @pytest.fixture
+    def handler(self) -> TextHandler:
+        return _handler()
+
+    @pytest.fixture
+    def content(self) -> bytes:
+        return CONTENT
+
+    @pytest.fixture
+    def ref(self, content: bytes) -> SourceRef:
+        return _ref()
