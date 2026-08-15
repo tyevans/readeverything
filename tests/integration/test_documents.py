@@ -32,17 +32,27 @@ async def test_a_base_install_without_pypdfium2_falls_back_to_binary(
 ) -> None:
     """Narrower, not broken — the same contract Pillow already has.
 
-    Whether `pypdfium2` was already imported elsewhere in this process (by
-    another test module) determines whether blocking it here actually changes
-    anything — the same caveat that applies to the analogous Pillow test in
-    `tests/unit/test_composition.py`. What this asserts is that the build
-    still succeeds either way; it is not a reliable way to prove the handler
-    was omitted in a full test run.
+    Blocking `pypdfium2` in `sys.modules` alone proves nothing: `_optional_pdf_handler`
+    does its imports (`readeverything.adapters.pdfium_probe`,
+    `readeverything.adapters.vision_recognizer`, `readeverything.handlers.pdf`)
+    inside a `try`, and if any of those modules is already cached in
+    `sys.modules` — true in any full-suite run, since other test modules import
+    them — the import is served from cache and the module's own `import
+    pypdfium2` never re-executes. `PdfHandler` would then register regardless
+    of what the guard does, the same escape the analogous Pillow test in
+    `tests/unit/test_composition.py` had. Evicting every module the guard
+    imports (not just the third-party package) forces the guarded import to
+    actually run, and asserting the handler's absence from the registry is the
+    real claim; "the build did not raise" is much weaker.
     """
+    monkeypatch.delitem(sys.modules, "readeverything.handlers.pdf", raising=False)
+    monkeypatch.delitem(sys.modules, "readeverything.adapters.pdfium_probe", raising=False)
+    monkeypatch.delitem(sys.modules, "readeverything.adapters.vision_recognizer", raising=False)
     monkeypatch.setitem(sys.modules, "pypdfium2", None)
     perception = await build_perception(documents_root, probe_binaries=False)
     card = await perception.inspect("report.pdf")
     assert card.kind == "binary"
+    assert "PdfHandler" not in {type(h).__name__ for h in perception.registry.handlers}
 
 
 async def test_the_agent_can_ask_a_pdf_for_a_page(documents_root: Path) -> None:

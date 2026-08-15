@@ -42,11 +42,24 @@ async def test_a_base_install_without_pillow_still_builds(
     The front door advertises `ImageHandler` on a base install and importing it
     raises ModuleNotFoundError: PIL. A composition root that propagated that
     would make the base install unusable rather than merely narrower.
+
+    Blocking `PIL` in `sys.modules` alone proves nothing: `_optional_image_handler`
+    does `from readeverything.handlers.image import ImageHandler` inside its
+    `try`, and if `readeverything.handlers.image` is already cached in
+    `sys.modules` (true in any full-suite run, since other test modules import
+    it), that import is served from cache and the module's own `import PIL`
+    never re-executes — so `ImageHandler` registers anyway and the test passes
+    vacuously regardless of what the guard does. Evicting the handler module
+    (and blocking `PIL`) forces the guarded import to actually run, and
+    asserting the handler's absence from the registry is the real claim; "it
+    did not raise" is much weaker.
     """
+    monkeypatch.delitem(sys.modules, "readeverything.handlers.image", raising=False)
     monkeypatch.setitem(sys.modules, "PIL", None)
     (tmp_path / "a.txt").write_text("hello")
     perception = await build_perception(tmp_path, probe_binaries=False)
     assert await perception.inspect("a.txt") is not None
+    assert "ImageHandler" not in {type(h).__name__ for h in perception.registry.handlers}
 
 
 async def test_explicit_capabilities_are_used_verbatim_and_nothing_is_probed(
