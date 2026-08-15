@@ -15,3 +15,6 @@ media/
 
 # Model weights. Large binaries, fetched on demand.
 models/
+
+# Local artifact cache written by scripts/ask_agent.py.
+.cache/

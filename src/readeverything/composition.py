@@ -28,6 +28,7 @@ from readeverything.handlers.text import TextHandler
 from readeverything.pipeline.perception import Perception
 from readeverything.pipeline.resolution import ResolutionMemo
 from readeverything.ports.artifacts import ArtifactStore
+from readeverything.ports.captions import CaptionExtractor
 from readeverything.ports.handler import MediaHandler
 from readeverything.ports.limits import Limiter
 from readeverything.ports.observation import Observer
@@ -104,6 +105,7 @@ def _video_handler(
     source: SourceReader,
     vision: VisionModel | None,
     transcriber: Transcriber | None,
+    captions: CaptionExtractor | None,
     observer: Observer | None,
     limiter: Limiter | None,
 ) -> list[MediaHandler]:
@@ -143,7 +145,7 @@ def _video_handler(
             vision=vision,
             audio=FfmpegAudio(),
             transcriber=transcriber,
-            captions=FfmpegCaptions(),
+            captions=FfmpegCaptions() if captions is None else captions,
             observer=observer,
             limiter=limiter,
         )
@@ -185,6 +187,7 @@ async def build_perception(
     *,
     vision: VisionModel | None = None,
     transcriber: Transcriber | None = None,
+    captions: CaptionExtractor | None = None,
     capabilities: CapabilitySet | None = None,
     artifacts: ArtifactStore | None = None,
     probe_binaries: bool = True,
@@ -230,7 +233,7 @@ async def build_perception(
         TextHandler(source=source, observer=observer),
         *_optional_image_handler(source, vision, observer),
         *_optional_pdf_handler(source, vision, observer),
-        *_video_handler(source, vision, transcriber, observer, limiter),
+        *_video_handler(source, vision, transcriber, captions, observer, limiter),
         *_audio_handler(source, transcriber, observer),
         # The fallback claims "*", so it must be last: the registry breaks a
         # rank tie by registration order, and a fallback registered first would

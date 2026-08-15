@@ -18,6 +18,12 @@ if TYPE_CHECKING:
         InMemoryArtifactStore as InMemoryArtifactStore,
     )
     from readeverything.adapters.binary_probe import BinaryProbe as BinaryProbe
+    from readeverything.adapters.caching_words import (
+        CachingCaptionExtractor as CachingCaptionExtractor,
+    )
+    from readeverything.adapters.caching_words import (
+        CachingTranscriber as CachingTranscriber,
+    )
     from readeverything.adapters.detection import PuremagicDetector as PuremagicDetector
     from readeverything.adapters.ffmpeg_audio import FfmpegAudio as FfmpegAudio
     from readeverything.adapters.ffmpeg_captions import FfmpegCaptions as FfmpegCaptions
@@ -154,6 +160,8 @@ _LAZY: dict[str, str] = {
     "FakeTranscriber": "readeverything.testing.fakes",
     "FakeVision": "readeverything.testing.fakes",
     "FakeVisionRefusing": "readeverything.testing.fakes",
+    "CachingCaptionExtractor": "readeverything.adapters.caching_words",
+    "CachingTranscriber": "readeverything.adapters.caching_words",
     "CaptionExtractor": "readeverything.ports.captions",
     "CueSource": "readeverything.domain.rendition",
     "FfmpegAudio": "readeverything.adapters.ffmpeg_audio",

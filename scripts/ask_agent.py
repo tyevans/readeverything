@@ -17,7 +17,11 @@ from langchain_core.messages import HumanMessage
 from langchain_openai import ChatOpenAI
 
 from readeverything import (
+    CachingCaptionExtractor,
+    CachingTranscriber,
     Capability,
+    FfmpegCaptions,
+    FilesystemArtifactStore,
     SemaphoreLimiter,
     build_openai_vision_model,
     build_perception,
@@ -27,6 +31,7 @@ from readeverything import (
 BASE_URL = "http://192.168.1.14:8080/v1/"
 MODEL = "qwen3.8-27b-mtp"
 WHISPER_DIR = "models/faster-whisper-small"
+CACHE_DIR = ".cache/readeverything"
 QUESTION = sys.argv[1] if len(sys.argv) > 1 else "What is mystery_subject.mp4 about?"
 
 
@@ -54,17 +59,32 @@ async def main() -> None:
     # Wired only if the weights are present. They are a large download the
     # project does not make on its own, so a machine without them still runs
     # this harness — it just falls back to frames on a caption-less file.
+    # A store that survives the process. `build_perception` defaults to an
+    # in-memory one and should keep doing so — a library that silently creates
+    # a cache directory on first use is a surprise, and WHERE is the caller's
+    # policy. Here the caller is this script, so it decides.
+    store = FilesystemArtifactStore(root=CACHE_DIR)
+
     transcriber = None
     if Path(WHISPER_DIR).is_dir():
         from readeverything import WhisperTranscriber
 
-        transcriber = WhisperTranscriber(model_dir=WHISPER_DIR)
-        print(f"transcriber: {transcriber.model_id}", flush=True)
+        # Wrapped so the transcript is produced once per file rather than once
+        # per question. Measured before this: a single run asked for two
+        # windows of one video and paid ~100 seconds of Whisper for each,
+        # because the rendition cache keys on the affordance's params and
+        # (0,120) is not (120,415). The expensive step was identical both times.
+        transcriber = CachingTranscriber(
+            inner=WhisperTranscriber(model_dir=WHISPER_DIR), store=store
+        )
+        print(f"transcriber: {transcriber.model_id} (cached)", flush=True)
 
     perception = await build_perception(
         "media",
         vision=vision,
         transcriber=transcriber,
+        captions=CachingCaptionExtractor(inner=FfmpegCaptions(), store=store),
+        artifacts=store,
         observer=Narrate(),
         limiter=SemaphoreLimiter({Capability.VISION: 3}),
     )
