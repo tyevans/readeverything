@@ -19,6 +19,18 @@ CONFINED: dict[str, set[str]] = {
     "charset_normalizer": {"handlers/text.py"},
     "PIL": {"handlers/image.py"},
     "subprocess": set(),
+    # asyncio's subprocess API is how binary_probe.py spawns external
+    # executables; the other three files use asyncio only for async I/O, but
+    # every current importer must be listed for this table to stay live.
+    "asyncio": {
+        "adapters/artifact_store.py",
+        "adapters/hashing.py",
+        "adapters/local_source.py",
+        "adapters/binary_probe.py",
+    },
+    # shutil.which locates the executable a capability probe is about to run;
+    # confined to the one adapter that probes binaries.
+    "shutil": {"adapters/binary_probe.py"},
 }
 
 
