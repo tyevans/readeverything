@@ -62,6 +62,7 @@ from readeverything.domain.rendition import (
 )
 from readeverything.domain.timeline import clamp_cues_to_duration, tile
 from readeverything.ports.audio import AudioExtractor
+from readeverything.ports.captions import CaptionExtractor
 from readeverything.ports.frames import FrameExtractor
 from readeverything.ports.limits import Limiter
 from readeverything.ports.observation import Observer, emit
@@ -174,6 +175,7 @@ class VideoHandler:
         vision: VisionModel | None = None,
         audio: AudioExtractor | None = None,
         transcriber: Transcriber | None = None,
+        captions: CaptionExtractor | None = None,
         sample_interval_s: float = DEFAULT_SAMPLE_INTERVAL_S,
         observer: Observer | None = None,
         limiter: Limiter | None = None,
@@ -186,6 +188,7 @@ class VideoHandler:
         self._vision = vision
         self._audio = audio
         self._transcriber = transcriber
+        self._captions = captions
         self._interval_s = sample_interval_s
         self._observer = observer
         self._limiter = limiter
@@ -594,6 +597,70 @@ class VideoHandler:
         handler's contract is that it never raises about its input, so the call
         is guarded rather than trusted.
         """
+        text_tracks = facts.text_subtitle_streams
+        if text_tracks and self._captions is not None:
+            captioned, degradations = await self._captioned_cues(path, facts)
+            if captioned:
+                return captioned, degradations
+            # A track that would not extract is exactly the case ASR exists
+            # for, so fall through rather than reporting an absence of words
+            # in a file that plainly has some. The caption path's degradations
+            # come WITH us: they explain why the expensive path is running,
+            # and dropping them here would make a silent fallback out of a
+            # reported one.
+            cues, asr_degradations = await self._transcribed_cues(path, facts)
+            return cues, (*degradations, *asr_degradations)
+        if text_tracks and self._captions is None:
+            cues, asr_degradations = await self._transcribed_cues(path, facts)
+            return cues, (
+                Degradation(
+                    what="captions not read",
+                    detail=(
+                        f"the container carries {len(text_tracks)} readable caption "
+                        "track(s) but no caption extractor is wired, so the words were "
+                        "reached the expensive way or not at all"
+                    ),
+                ),
+                *asr_degradations,
+            )
+        return await self._transcribed_cues(path, facts)
+
+    async def _captioned_cues(
+        self, path: str, facts: MediaFacts
+    ) -> tuple[tuple[TranscriptCue, ...], tuple[Degradation, ...]]:
+        """The container's own caption track, tiled onto this timeline.
+
+        WHICH TRACK is a decision, not a default. The reference file's
+        readable track is subtitle 1 and its subtitle 0 is bitmaps that
+        extract to nothing at all, so asking for "the first track" finds no
+        words in a file that is full of them. The first TEXT track is what is
+        wanted, and the index is counted over subtitle streams because that is
+        how ffmpeg's `-map 0:s:N` counts.
+        """
+        track = next((i for i, s in enumerate(facts.subtitle_streams) if s.is_text), 0)
+        try:
+            extracted = await self._captions.extract(path, track)  # type: ignore[union-attr]
+        except Exception as exc:
+            return (), (
+                Degradation(
+                    what="caption extraction failed",
+                    detail=(
+                        f"the caption track could not be read ({exc}); the timeline falls "
+                        "back to whatever else is configured"
+                    ),
+                ),
+            )
+        if not extracted:
+            return (), ()
+        cues, dropped = clamp_cues_to_duration(extracted, facts.duration_s)
+        if not cues:
+            return (), ()
+        return cues, _dropped_degradations(dropped, facts.duration_s, "caption track")
+
+    async def _transcribed_cues(
+        self, path: str, facts: MediaFacts
+    ) -> tuple[tuple[TranscriptCue, ...], tuple[Degradation, ...]]:
+        """What a transcriber heard, when there are no captions to read."""
         if self._transcriber is None:
             return (), ()
         if self._audio is None:
@@ -634,18 +701,9 @@ class VideoHandler:
                 ),
             )
         cues, dropped = clamp_cues_to_duration(transcribed, facts.duration_s)
-        degradations: list[Degradation] = []
-        if dropped:
-            degradations.append(
-                Degradation(
-                    what="cues outside the file",
-                    detail=(
-                        f"{dropped} cue(s) started at or after the probed duration of "
-                        f"{facts.duration_s:g}s and were dropped; the transcriber and the "
-                        "probe disagree about how long this file is"
-                    ),
-                )
-            )
+        degradations: list[Degradation] = list(
+            _dropped_degradations(dropped, facts.duration_s, "transcriber")
+        )
         if not cues:
             # A transcriber that ran and heard nothing is a different fact from
             # an absent transcriber, and the timeline says so rather than
@@ -935,6 +993,30 @@ def _merge(
     entries.extend((cue.span.start_s, cue) for cue in cues)
     entries.sort(key=lambda entry: (entry[0], entry[1] is not None))
     return tuple(entries)
+
+
+def _dropped_degradations(
+    dropped: int, duration_s: float, producer: str
+) -> tuple[Degradation, ...]:
+    """What to report when cues fell outside the probed duration.
+
+    Shared by the caption path and the transcription path because the fact is
+    the same one — someone's idea of where this file ends disagrees with the
+    probe's — and two copies would drift. `producer` names who disagreed, so a
+    reader knows whether to doubt a caption author or a model.
+    """
+    if not dropped:
+        return ()
+    return (
+        Degradation(
+            what="cues outside the file",
+            detail=(
+                f"{dropped} cue(s) started at or after the probed duration of "
+                f"{duration_s:g}s and were dropped; the {producer} and the probe disagree "
+                "about how long this file is"
+            ),
+        ),
+    )
 
 
 def _spoken(cue: TranscriptCue) -> str:

@@ -42,6 +42,8 @@ CONFINED: dict[str, set[str]] = {
         "adapters/ffmpeg_frames.py",
         # ffmpeg, same pattern, extracting the audio track.
         "adapters/ffmpeg_audio.py",
+        # ffmpeg, same pattern, converting a caption track to SRT on stdout.
+        "adapters/ffmpeg_captions.py",
         # whisper's transcribe() is synchronous and CPU-bound; run in a
         # thread so it doesn't block the event loop.
         "adapters/whisper_transcriber.py",

@@ -38,8 +38,10 @@ from readeverything.handlers.video import (
 from readeverything.ports.frames import FrameExtractor
 from readeverything.ports.streams import MediaFacts, StreamInfo, StreamProbe
 from readeverything.testing.fakes import (
+    FakeCaptions,
     FakeTranscriber,
     FakeVision,
+    RaisingCaptions,
     RaisingObserver,
     RecordingObserver,
 )
@@ -251,16 +253,27 @@ def _handler(
     frames: object | None = None,
     audio: object | None = None,
     transcriber: object | None = None,
+    captions: object | None = None,
     observer: object | None = None,
     limiter: object | None = None,
+    facts: MediaFacts | None = None,
 ) -> VideoHandler:
+    """A handler over a real file.
+
+    `facts` substitutes a stub probe for the real one. Only the precedence
+    tests use it, and only because building a container with both a bitmap and
+    a text subtitle track for every case would test ffmpeg's muxer rather than
+    this handler's rule. The container itself stays real, so frame extraction
+    is unaffected.
+    """
     return VideoHandler(
         source=_PathSource(path),
-        probe=FfprobeStreams(),
+        probe=_StubProbe(facts) if facts is not None else FfprobeStreams(),
         frames=frames or FfmpegFrames(),  # type: ignore[arg-type]  # structural stub in tests
         vision=vision,  # type: ignore[arg-type]  # structural stub in tests
         audio=audio,  # type: ignore[arg-type]  # structural stub in tests
         transcriber=transcriber,  # type: ignore[arg-type]  # structural stub in tests
+        captions=captions,  # type: ignore[arg-type]  # structural stub in tests
         sample_interval_s=interval,
         observer=observer,  # type: ignore[arg-type]  # structural stub in tests
         limiter=limiter,  # type: ignore[arg-type]  # structural stub in tests
@@ -1212,3 +1225,120 @@ def test_an_empty_cue_names_neither_producer_falsely() -> None:
         source=CueSource.CAPTIONED,
     )
     assert _spoken(empty) == f"{CAPTION_MARKER} (no text was produced for this cue)"
+
+
+# --- precedence: captions before ASR -----------------------------------------
+
+
+def _caption_cues() -> tuple[TranscriptCue, ...]:
+    return (
+        TranscriptCue(span=TimeSpan(0.5, 2.0), text="written words", speaker=None, confidence=None),
+    )
+
+
+def _captioned_facts() -> MediaFacts:
+    return _facts(
+        subtitles=(_subtitle("dvd_subtitle", is_text=False), _subtitle("mov_text", is_text=True))
+    )
+
+
+async def test_captions_are_preferred_to_transcription(sample_video: str) -> None:
+    """Captions cost one ffmpeg call against a model's whole run, arrive
+    already aligned to this timeline, and were written by someone who could
+    hear the audio. Paying for ASR when they exist is waste."""
+    captions = FakeCaptions(cues=_caption_cues())
+    rendered = await _handler(
+        sample_video,
+        vision=FakeVision(),
+        audio=FfmpegAudio(),
+        transcriber=FakeTranscriber(duration_s=5.0),
+        captions=captions,
+        facts=_captioned_facts(),
+    ).represent(_ref(), Budget(max_chars=None))
+    assert f"{CAPTION_MARKER} written words" in rendered.text
+    assert SPEECH_MARKER not in rendered.text
+    assert captions.calls, "the caption track was never read"
+
+
+async def test_the_text_track_is_chosen_not_the_first_one(sample_video: str) -> None:
+    """The reference file's readable track is subtitle 1; subtitle 0 is
+    bitmaps that extract to nothing. Asking for "the first track" finds no
+    words in a file that is full of them."""
+    captions = FakeCaptions(cues=_caption_cues())
+    await _handler(
+        sample_video,
+        vision=FakeVision(),
+        captions=captions,
+        facts=_captioned_facts(),
+    ).represent(_ref(), Budget(max_chars=None))
+    assert captions.calls[0][1] == 1
+
+
+async def test_asr_runs_when_there_is_no_caption_track(sample_video: str) -> None:
+    rendered = await _handler(
+        sample_video,
+        vision=FakeVision(),
+        audio=FfmpegAudio(),
+        transcriber=FakeTranscriber(duration_s=5.0),
+        captions=FakeCaptions(cues=None),
+    ).represent(_ref(), Budget(max_chars=None))
+    assert SPEECH_MARKER in rendered.text
+    assert CAPTION_MARKER not in rendered.text
+
+
+async def test_a_caption_track_that_will_not_extract_falls_through_to_asr(
+    sample_video: str,
+) -> None:
+    """A declared track that yields nothing is exactly the case ASR exists
+    for. Reporting "no words" about a file that plainly has some would be
+    worse than paying for the model."""
+    rendered = await _handler(
+        sample_video,
+        vision=FakeVision(),
+        audio=FfmpegAudio(),
+        transcriber=FakeTranscriber(duration_s=5.0),
+        captions=FakeCaptions(cues=None),
+        facts=_captioned_facts(),
+    ).represent(_ref(), Budget(max_chars=None))
+    assert SPEECH_MARKER in rendered.text
+
+
+async def test_a_raising_caption_extractor_degrades_rather_than_failing(
+    sample_video: str,
+) -> None:
+    """`extract` is specified never to raise, but it is injected, and this
+    handler's contract is that it never raises about its input."""
+    rendered = await _handler(
+        sample_video,
+        vision=FakeVision(),
+        audio=FfmpegAudio(),
+        transcriber=FakeTranscriber(duration_s=5.0),
+        captions=RaisingCaptions(),
+        facts=_captioned_facts(),
+    ).represent(_ref(), Budget(max_chars=None))
+    assert rendered.text.strip()
+    assert any(d.what == "caption extraction failed" for d in rendered.degradations)
+    assert SPEECH_MARKER in rendered.text
+
+
+async def test_unread_captions_are_reported(sample_video: str) -> None:
+    """A file whose captions were ignored and whose words were reached by
+    model instead is a worse answer produced at higher cost. Silence about
+    that is how it stays that way."""
+    rendered = await _handler(
+        sample_video,
+        vision=FakeVision(),
+        audio=FfmpegAudio(),
+        transcriber=FakeTranscriber(duration_s=5.0),
+        captions=None,
+        facts=_captioned_facts(),
+    ).represent(_ref(), Budget(max_chars=None))
+    assert any(d.what == "captions not read" for d in rendered.degradations)
+
+
+async def test_no_caption_complaint_when_the_file_has_none(sample_video: str) -> None:
+    """A file with no words is a fact about the file, not a degradation."""
+    rendered = await _handler(sample_video, vision=FakeVision()).represent(
+        _ref(), Budget(max_chars=None)
+    )
+    assert not any("caption" in d.what for d in rendered.degradations)
