@@ -26,6 +26,7 @@ from readeverything.domain.rendition import (
     TranscriptCue,
 )
 from readeverything.handlers.video import (
+    MOMENT_SEPARATOR,
     SPEECH_MARKER,
     DescribeFrameParams,
     FrameAtParams,
@@ -890,14 +891,70 @@ def test_a_non_positive_sample_interval_is_rejected() -> None:
 # --- fetching the moments concurrently ----------------------------------------
 
 
+async def test_each_moment_carries_the_description_of_its_own_frame() -> None:
+    """THE ABSOLUTE ASSERTION the test below does not make.
+
+    `test_the_timeline_is_identical_when_moments_complete_out_of_order` compares
+    two runs of the SAME code, so a mapping bug that shuffles `fetched`
+    identically in both runs is invisible to it — both runs would still agree
+    with each other. This asserts against an independently computable fact
+    instead: the moment rendered at timestamp T must describe the frame that
+    was FETCHED AT T, not at some other entry's timestamp.
+
+    `_RecordingFrames.frame_at` returns bytes whose LENGTH varies with the
+    timestamp requested, and `FakeVision` describes an image by its length, so
+    the expected description at each moment is computable from that moment's
+    own timestamp alone — no comparison to a second run is needed.
+
+    Cues are interleaved between the sampled frames on purpose: with a
+    transcriber configured, `sampled` here is `(0, 2, 4)` over five entries,
+    not `range(5)`. That gap between "index into `entries`" and "position
+    among sampled moments" is exactly what separates a correct
+    `zip(sampled, outcomes)` from a mis-mapping `enumerate(outcomes)` — with no
+    cues the two sequences are identical and this test would prove nothing.
+    """
+
+    class _TwoCues:
+        model_id = "two-cues@1"
+
+        async def transcribe(self, audio: bytes, mime: str) -> tuple[TranscriptCue, ...]:
+            return (
+                TranscriptCue(span=TimeSpan(1.0, 1.2), text="one", speaker=None, confidence=None),
+                TranscriptCue(span=TimeSpan(3.0, 3.2), text="three", speaker=None, confidence=None),
+            )
+
+    frames = _RecordingFrames()
+    rendered = await _stub_handler(
+        _facts(duration_s=5.0),
+        vision=FakeVision(),
+        audio=_StubAudio(),
+        transcriber=_TwoCues(),
+        interval=2.0,
+        frames=frames,
+    ).represent(_ref(), Budget(max_chars=None))
+
+    lines = [line for line in rendered.text.split(MOMENT_SEPARATOR) if line]
+    frame_lines = [line for line in lines if SPEECH_MARKER not in line]
+    assert len(frame_lines) == 3, "expected exactly the three sampled frames, in order"
+    for seconds, line in zip((0.0, 2.0, 4.0), frame_lines, strict=True):
+        expected_length = 64 + int(seconds * 10)
+        assert f"of {expected_length} bytes" in line, (
+            f"the moment at {seconds}s must describe the frame fetched at {seconds}s, "
+            f"but got: {line!r}"
+        )
+
+
 async def test_the_timeline_is_identical_when_moments_complete_out_of_order(
     sample_video: str,
 ) -> None:
-    """THE TEST THIS TASK EXISTS FOR.
+    """Completion order does not change the output — NOT the mapping guarantee.
 
-    A naive `gather` that appended results in completion order would scramble
-    the timeline, and every locator with it. Fetch order must not reach the
-    output at all.
+    This proves that a naive `gather` appending results in completion order
+    would scramble the timeline. It does NOT prove that entries map to the
+    RIGHT moments: a mapping bug that shuffles `fetched` the same way in both
+    runs compared here would still pass, because the two runs would still
+    agree with each other. `test_each_moment_carries_the_description_of_its_own_frame`
+    is the absolute check for that; keep both.
 
     The fake extractor here returns each frame after a delay inversely
     proportional to its timestamp, so completion order is exactly reversed —
