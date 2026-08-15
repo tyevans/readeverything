@@ -58,6 +58,7 @@ if TYPE_CHECKING:
     from readeverything.domain.rendition import TextContent as TextContent
     from readeverything.domain.rendition import TranscriptCue as TranscriptCue
     from readeverything.handlers.binary import BinaryHandler as BinaryHandler
+    from readeverything.handlers.image import ImageHandler as ImageHandler
     from readeverything.handlers.text import TextHandler as TextHandler
     from readeverything.pipeline.perception import Perception as Perception
     from readeverything.ports.artifacts import ArtifactStore as ArtifactStore
@@ -108,6 +109,7 @@ _LAZY: dict[str, str] = {
     "FileSource": "readeverything.ports.source",
     "FilesystemArtifactStore": "readeverything.adapters.artifact_store",
     "ImageContent": "readeverything.domain.rendition",
+    "ImageHandler": "readeverything.handlers.image",
     "InMemoryArtifactStore": "readeverything.adapters.artifact_store",
     "InfrastructureError": "readeverything.domain.errors",
     "LocalFileSource": "readeverything.adapters.local_source",
