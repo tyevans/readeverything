@@ -19,6 +19,7 @@ observable, with strong DDD and SOLID vision, built from real user stories.
 | 4. The document family | Plan 4 | `d4f564b` | 381 tests, 94.16%. PDF via pypdfium2. First honest producers of `PageRef`, `BBox`-on-a-page, and `Rendered.barriers` |
 | 5. The moving image | Plan 5 | `da4d0e6` | 453 tests, 92.57%. Video via ffmpeg. `TimeSpan` gets its producer — **every locator type is now real**. `BinaryProbe` fixed |
 | 6. The spoken word | Plan 6 | `2e86b6c` | 537 tests, 92.62%. Audio via faster-whisper; `TranscriptCue` gets its producer; video interleaves cues with frames; `domain/timeline.py` shared by both |
+| 7. What it is doing | Plan 7 | `bff419d`, awaiting merge | 583 tests, 92.86%. `Observer` port (typed event union, no tracing dependency); `Limiter` port with per-capability bounds; video samples frames concurrently with a timeline invariant under completion order; all six handlers emit |
 
 ## The two tracks, and why this order
 
