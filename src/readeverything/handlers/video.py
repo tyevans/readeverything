@@ -638,7 +638,8 @@ class VideoHandler:
                 ref, seconds, await self._absent_frame_detail(path, seconds)
             )
         try:
-            text = await self._vision.describe(frame, "image/png", prompt)
+            async with self._limit(Capability.VISION):
+                text = await self._vision.describe(frame, "image/png", prompt)
         except Exception:
             return self._degraded_frame(
                 ref,

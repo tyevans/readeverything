@@ -965,6 +965,19 @@ async def test_describe_frame_returns_a_description_located_in_time(sample_video
     assert not rendition.degraded
 
 
+async def test_describe_frame_acquires_the_vision_limiter(sample_video: str) -> None:
+    """A test asserting only a description came back would pass just as well
+    against an unwrapped vision call. `_BoundedCountingLimiter.peak` only
+    gains a `Capability.VISION` entry if `self._limit(Capability.VISION)` was
+    actually entered, so this fails on a `describe_frame` that regresses to
+    calling the vision model unbounded."""
+    limiter = _BoundedCountingLimiter({Capability.VISION: 1, Capability.FFMPEG: 1})
+    await _handler(sample_video, vision=FakeVision(), limiter=limiter).invoke(
+        _ref(), "describe_frame", DescribeFrameParams(seconds=2.5)
+    )
+    assert limiter.peak[Capability.VISION] == 1
+
+
 async def test_describe_frame_is_unknown_without_vision(sample_video: str) -> None:
     with pytest.raises(UnknownAffordanceError):
         await _handler(sample_video, vision=None).invoke(
