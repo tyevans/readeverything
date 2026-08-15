@@ -6,6 +6,7 @@ point of this module: a caller's observer must never break a read.
 
 from __future__ import annotations
 
+from contextlib import suppress
 from typing import Protocol, runtime_checkable
 
 from readeverything.domain.observation import Event
@@ -32,7 +33,5 @@ def emit(observer: Observer | None, event: Event) -> None:
     """
     if observer is None:
         return
-    try:
+    with suppress(Exception):  # see docstring; containment is the point
         observer.observe(event)
-    except Exception:  # noqa: BLE001 — see docstring; containment is the point
-        pass

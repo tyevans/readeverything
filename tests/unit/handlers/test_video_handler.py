@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+from collections.abc import AsyncIterator, Mapping
+from contextlib import asynccontextmanager
 from itertools import pairwise
 from pathlib import Path
 
@@ -8,10 +11,12 @@ import pytest
 from readeverything.adapters.ffmpeg_audio import FfmpegAudio
 from readeverything.adapters.ffmpeg_frames import FfmpegFrames
 from readeverything.adapters.ffprobe_streams import FfprobeStreams
+from readeverything.adapters.semaphore_limiter import SemaphoreLimiter
 from readeverything.domain.capability import Capability
 from readeverything.domain.errors import UnknownAffordanceError
 from readeverything.domain.identity import ContentHash, MediaKind, MimeType, SourceRef
 from readeverything.domain.locators import ByteRange, TimeSpan
+from readeverything.domain.observation import OperationProgressed
 from readeverything.domain.rendition import (
     Budget,
     ImageContent,
@@ -28,7 +33,12 @@ from readeverything.handlers.video import (
 )
 from readeverything.ports.frames import FrameExtractor
 from readeverything.ports.streams import MediaFacts, StreamInfo, StreamProbe
-from readeverything.testing.fakes import FakeTranscriber, FakeVision
+from readeverything.testing.fakes import (
+    FakeTranscriber,
+    FakeVision,
+    RaisingObserver,
+    RecordingObserver,
+)
 from readeverything.testing.handler_compliance import MediaHandlerCompliance
 
 
@@ -108,6 +118,92 @@ class _StubAudio:
         return b"RIFF...."
 
 
+class _RecordingFrames:
+    """Deterministic frame bytes, recording the order of request and completion.
+
+    The bytes' LENGTH varies with the timestamp, and `FakeVision` describes an
+    image by its length, so a timeline assembled in completion order rather
+    than in entry order would say visibly different things at each moment
+    instead of merely reordering identical lines.
+    """
+
+    def __init__(self, delay_s: float = 0.0) -> None:
+        self.requested: list[float] = []
+        self.completed: list[float] = []
+        self._delay_s = delay_s
+
+    async def _wait(self, seconds: float) -> None:
+        await asyncio.sleep(self._delay_s)
+
+    async def frame_at(self, path: str, seconds: float) -> bytes | None:
+        self.requested.append(seconds)
+        await self._wait(seconds)
+        self.completed.append(seconds)
+        return b"frame".ljust(64 + int(seconds * 10), b"\0")
+
+    async def scene_cuts(self, path: str, threshold: float = 0.4) -> tuple[float, ...]:
+        return ()
+
+
+#: The longest a `_ReverseOrderFrames` extraction waits, at t=0. Every later
+#: timestamp waits strictly less, so completion order is exactly reversed.
+_REVERSE_UNIT_S = 0.05
+
+
+class _ReverseOrderFrames(_RecordingFrames):
+    """An extractor whose completions arrive in exactly the reverse of the
+    order they were requested in.
+
+    A fake that returns in call order cannot fail the test it exists for: it
+    would pass against an implementation that appended results in completion
+    order, because the two orders would be the same. The wait shrinks strictly
+    as the timestamp grows, so the LAST moment requested is the first to
+    finish, and `test_the_timeline_is_identical_when_moments_complete_out_of_order`
+    asserts that inversion actually happened rather than assuming it.
+    """
+
+    async def _wait(self, seconds: float) -> None:
+        await asyncio.sleep(_REVERSE_UNIT_S / (1.0 + seconds))
+
+
+class _BoundedCountingLimiter:
+    """A real bound, and the peak in-flight count it actually saw.
+
+    `CountingLimiter` records without bounding and `SemaphoreLimiter` bounds
+    without recording; asserting that a bound HELD needs both at once, and a
+    measured peak is an assertion about concurrency rather than about timing.
+    """
+
+    def __init__(self, limits: Mapping[Capability, int]) -> None:
+        self._inner = SemaphoreLimiter(limits)
+        self.in_flight: dict[Capability, int] = {}
+        self.peak: dict[Capability, int] = {}
+
+    @asynccontextmanager
+    async def limit(self, capability: Capability) -> AsyncIterator[None]:
+        async with self._inner.limit(capability):
+            self.in_flight[capability] = self.in_flight.get(capability, 0) + 1
+            self.peak[capability] = max(self.peak.get(capability, 0), self.in_flight[capability])
+            try:
+                yield
+            finally:
+                self.in_flight[capability] -= 1
+
+
+class _SlowVision:
+    """A vision model slow enough for concurrent calls to overlap.
+
+    An instantaneous fake would never show a peak above one, and a test that
+    measured one would prove nothing about the bound.
+    """
+
+    model_id = "slow-vision@1"
+
+    async def describe(self, data: bytes, mime: str, prompt: str) -> str:
+        await asyncio.sleep(0.01)
+        return f"[{len(data)} bytes]"
+
+
 class _RefusingVision:
     model_id = "refusing@1"
 
@@ -139,6 +235,8 @@ def _handler(
     frames: object | None = None,
     audio: object | None = None,
     transcriber: object | None = None,
+    observer: object | None = None,
+    limiter: object | None = None,
 ) -> VideoHandler:
     return VideoHandler(
         source=_PathSource(path),
@@ -148,6 +246,8 @@ def _handler(
         audio=audio,  # type: ignore[arg-type]  # structural stub in tests
         transcriber=transcriber,  # type: ignore[arg-type]  # structural stub in tests
         sample_interval_s=interval,
+        observer=observer,  # type: ignore[arg-type]  # structural stub in tests
+        limiter=limiter,  # type: ignore[arg-type]  # structural stub in tests
     )
 
 
@@ -785,6 +885,136 @@ def test_a_non_positive_sample_interval_is_rejected() -> None:
             frames=_NoFrames(),
             sample_interval_s=0.0,
         )
+
+
+# --- fetching the moments concurrently ----------------------------------------
+
+
+async def test_the_timeline_is_identical_when_moments_complete_out_of_order(
+    sample_video: str,
+) -> None:
+    """THE TEST THIS TASK EXISTS FOR.
+
+    A naive `gather` that appended results in completion order would scramble
+    the timeline, and every locator with it. Fetch order must not reach the
+    output at all.
+
+    The fake extractor here returns each frame after a delay inversely
+    proportional to its timestamp, so completion order is exactly reversed —
+    and this asserts that it WAS, because a fake that quietly returned in call
+    order would make the rest of this test vacuous.
+    """
+    in_order = _RecordingFrames()
+    reversed_order = _ReverseOrderFrames()
+    ordered = await _handler(
+        sample_video, vision=FakeVision(), frames=in_order, interval=1.0
+    ).represent(_ref(), Budget(max_chars=None))
+    scrambled = await _handler(
+        sample_video, vision=FakeVision(), frames=reversed_order, interval=1.0
+    ).represent(_ref(), Budget(max_chars=None))
+
+    assert len(reversed_order.requested) > 1
+    assert reversed_order.completed == list(reversed(reversed_order.requested))
+    assert in_order.completed == in_order.requested
+
+    assert ordered.text == scrambled.text
+    assert [s.locator for s in ordered.locator_map.segments] == [
+        s.locator for s in scrambled.locator_map.segments
+    ]
+    assert [s.span for s in ordered.locator_map.segments] == [
+        s.span for s in scrambled.locator_map.segments
+    ]
+
+
+async def test_the_moments_are_fetched_concurrently(sample_video: str) -> None:
+    """Every request is out before the first completion — which is what makes
+    the ordering above a real risk rather than a hypothetical one."""
+    frames = _ReverseOrderFrames()
+    await _handler(sample_video, vision=FakeVision(), frames=frames, interval=1.0).represent(
+        _ref(), Budget(max_chars=None)
+    )
+    assert len(frames.requested) > 1
+    # The last moment requested is the first to finish, which is only possible
+    # if every request was in flight before any of them returned.
+    assert frames.completed[0] == frames.requested[-1]
+
+
+async def test_frame_work_is_bounded_by_the_configured_limits(sample_video: str) -> None:
+    """Asserted by peak in-flight count against a counting limiter, not timing.
+
+    The peak is asserted EQUAL to the bound, not merely under it: a handler
+    that had quietly gone back to sequential fetching would also never exceed
+    two, and this test must fail for that.
+    """
+    limiter = _BoundedCountingLimiter({Capability.VISION: 2, Capability.FFMPEG: 3})
+    await _handler(
+        sample_video,
+        vision=_SlowVision(),
+        frames=_RecordingFrames(delay_s=0.01),
+        limiter=limiter,
+        interval=1.0,
+    ).represent(_ref(), Budget(max_chars=None))
+    assert limiter.peak[Capability.VISION] == 2
+    assert limiter.peak[Capability.FFMPEG] == 3
+
+
+async def test_without_a_limiter_behaviour_is_unchanged(sample_video: str) -> None:
+    """Every existing video test rests on this."""
+    before = await _handler(sample_video, vision=FakeVision()).represent(
+        _ref(), Budget(max_chars=None)
+    )
+    after = await _handler(sample_video, vision=FakeVision(), limiter=None).represent(
+        _ref(), Budget(max_chars=None)
+    )
+    assert before.text == after.text
+
+
+async def test_an_observer_that_raises_does_not_change_the_result(
+    sample_video: str,
+) -> None:
+    """A read must not fail — or differ — because progress reporting failed."""
+    quiet = await _handler(sample_video, vision=FakeVision()).represent(
+        _ref(), Budget(max_chars=None)
+    )
+    noisy = await _handler(sample_video, vision=FakeVision(), observer=RaisingObserver()).represent(
+        _ref(), Budget(max_chars=None)
+    )
+    assert quiet.text == noisy.text
+    assert quiet.locator_map.length == noisy.locator_map.length
+
+
+async def test_progress_reaches_the_observer_in_order(sample_video: str) -> None:
+    recorder = RecordingObserver()
+    await _handler(
+        sample_video,
+        vision=FakeVision(),
+        frames=_ReverseOrderFrames(),
+        interval=1.0,
+        observer=recorder,
+    ).represent(_ref(), Budget(max_chars=None))
+    kinds = [type(e).__name__ for e in recorder.events]
+    assert kinds[0] == "OperationStarted"
+    assert kinds[-1] == "OperationFinished"
+    progress = [e for e in recorder.events if isinstance(e, OperationProgressed)]
+    dones = [e.done for e in progress]
+    # Monotonic AND complete: the moments finished in reverse, and the count
+    # still counted up from one to the total exactly once each.
+    assert dones == sorted(dones)
+    assert dones == list(range(1, len(progress) + 1))
+    assert {e.total for e in progress} == {len(progress)}
+
+
+async def test_a_read_that_never_reaches_a_timeline_is_still_narrated(
+    tmp_path: Path,
+) -> None:
+    """A start with no end is the hang this narration exists to make visible,
+    so the degraded paths report one too."""
+    path = tmp_path / "not.mp4"
+    path.write_bytes(b"not a video")
+    recorder = RecordingObserver()
+    await _handler(str(path), observer=recorder).represent(_ref(), Budget(max_chars=None))
+    kinds = [type(e).__name__ for e in recorder.events]
+    assert kinds == ["OperationStarted", "OperationFinished"]
 
 
 class TestVideoHandlerCompliance(MediaHandlerCompliance):

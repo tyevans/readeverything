@@ -31,6 +31,9 @@ arrive by injection. Nothing here imports an adapter.
 
 from __future__ import annotations
 
+import asyncio
+import time
+from contextlib import AbstractAsyncContextManager, nullcontext
 from typing import ClassVar
 
 from pydantic import BaseModel, Field
@@ -42,6 +45,11 @@ from readeverything.domain.errors import UnknownAffordanceError
 from readeverything.domain.identity import MediaKind, SourceRef
 from readeverything.domain.locator_map import LocatorMap, LocatorSegment
 from readeverything.domain.locators import ByteRange, CharSpan, TimeSpan
+from readeverything.domain.observation import (
+    OperationFinished,
+    OperationProgressed,
+    OperationStarted,
+)
 from readeverything.domain.rendition import (
     Budget,
     Degradation,
@@ -54,6 +62,8 @@ from readeverything.domain.rendition import (
 from readeverything.domain.timeline import clamp_cues_to_duration, tile
 from readeverything.ports.audio import AudioExtractor
 from readeverything.ports.frames import FrameExtractor
+from readeverything.ports.limits import Limiter
+from readeverything.ports.observation import Observer, emit
 from readeverything.ports.source import SourceReader
 from readeverything.ports.streams import MediaFacts, StreamProbe
 from readeverything.ports.transcription import Transcriber
@@ -92,6 +102,17 @@ SPEECH_MARKER = "(speech)"
 EXTRACTED_MIME = "audio/wav"
 
 _FRAME_PROMPT = "Describe what is visible in this video frame, in one or two sentences."
+
+#: What `represent` calls itself when it narrates.
+_OPERATION = "represent"
+
+#: What a moment says when fetching it raised instead of returning a state.
+#: `_moment` guards both of its calls and returns a state rather than raising,
+#: so nothing here should ever be seen; it exists because `asyncio.gather`
+#: propagates the first exception, and this handler's contract is that
+#: `represent` does not raise. A moment that failed in a way `_moment` did not
+#: anticipate is reported as a failed moment, not as an exception out of a read.
+_UNEXPECTED_MOMENT = ("(this moment could not be read)", "failed")
 
 
 class FrameAtParams(BaseModel):
@@ -147,6 +168,8 @@ class VideoHandler:
         audio: AudioExtractor | None = None,
         transcriber: Transcriber | None = None,
         sample_interval_s: float = DEFAULT_SAMPLE_INTERVAL_S,
+        observer: Observer | None = None,
+        limiter: Limiter | None = None,
     ) -> None:
         if sample_interval_s <= 0:
             raise ValueError(f"sample_interval_s must be positive, got {sample_interval_s}")
@@ -157,6 +180,19 @@ class VideoHandler:
         self._audio = audio
         self._transcriber = transcriber
         self._interval_s = sample_interval_s
+        self._observer = observer
+        self._limiter = limiter
+
+    def _limit(self, capability: Capability) -> AbstractAsyncContextManager[None]:
+        """One capability's bound, or nothing at all.
+
+        `None` is unbounded, which is this handler's behaviour before a limiter
+        existed. A default limiter would silently throttle every caller who
+        never asked for one.
+        """
+        if self._limiter is None:
+            return nullcontext()
+        return self._limiter.limit(capability)
 
     def requires(self) -> frozenset[Capability]:
         return frozenset({Capability.FFMPEG})
@@ -391,6 +427,26 @@ class VideoHandler:
         return tile(times, duration_s=facts.duration_s, min_width_s=self._frame_duration(facts))
 
     async def represent(self, ref: SourceRef, budget: Budget) -> Rendered:
+        """Narrated from end to end, including the paths that read nothing.
+
+        `OperationFinished` is reported in a `finally` and its `elapsed_s` is
+        measured rather than estimated: a caller watching a read is watching to
+        find out whether it is progressing, and a start with no end is the hang
+        this narration exists to make visible.
+        """
+        emit(self._observer, OperationStarted(operation=_OPERATION, ref=ref))
+        started = time.perf_counter()
+        try:
+            return await self._represent(ref, budget)
+        finally:
+            emit(
+                self._observer,
+                OperationFinished(
+                    operation=_OPERATION, ref=ref, elapsed_s=time.perf_counter() - started
+                ),
+            )
+
+    async def _represent(self, ref: SourceRef, budget: Budget) -> Rendered:
         facts, path = await self._facts(ref)
         if facts is None or path is None:
             return self._nothing_to_read(
@@ -432,6 +488,7 @@ class VideoHandler:
         cues, transcript_degradations = await self._cues(path, facts)
         entries = _merge(times, cues)
         bounds = self._bounds(tuple(start for start, _ in entries), facts)
+        fetched = await self._moments(ref, path, entries)
         chunks: list[str] = []
         segments: list[LocatorSegment] = []
         entry_barriers: list[int] = []
@@ -439,16 +496,16 @@ class VideoHandler:
         missing: list[float] = []
         failed: list[float] = []
         cursor = 0
-        for index, ((sampled_at, cue), (start, end)) in enumerate(
+        for index, ((_sampled_at, cue), (start, end)) in enumerate(
             zip(entries, bounds, strict=True)
         ):
             if cue is None:
-                # The frame is decoded at the moment it was SAMPLED, while the
-                # entry is labelled and located at its tiled start. The two
-                # differ only when a cue shares a frame's instant and tiling
-                # nudges one of them apart; asking ffmpeg for the nudged
-                # timestamp instead would decode a frame nobody asked about.
-                body, state = await self._moment(path, sampled_at)
+                # `fetched` is indexed BY ENTRY, so this reads the moment that
+                # belongs here whatever order the fetches finished in. The
+                # `or` is unreachable — `_moments` holds an outcome at every
+                # `cue is None` index by construction — and is what narrows
+                # the optional away.
+                body, state = fetched[index] or _UNEXPECTED_MOMENT
                 if state == "missing":
                     missing.append(start)
                 elif state == "failed":
@@ -618,15 +675,76 @@ class VideoHandler:
                 break
         return index
 
+    async def _moments(
+        self,
+        ref: SourceRef,
+        path: str,
+        entries: tuple[tuple[float, TranscriptCue | None], ...],
+    ) -> list[tuple[str, str] | None]:
+        """Every sampled moment, fetched concurrently, INDEXED BY ENTRY.
+
+        Fetching a moment is slow and independent of every other moment;
+        assembling the timeline out of them is fast and strictly ordered. This
+        does the first job and hands the second a list it reads positionally,
+        so completion order never reaches the assembly and cannot reach the
+        text or the locators. `None` marks a cue entry, which fetches nothing.
+
+        The frame is decoded at the moment it was SAMPLED, while the entry is
+        labelled and located at its tiled start. The two differ only when a cue
+        shares a frame's instant and tiling nudges one of them apart; asking
+        ffmpeg for the nudged timestamp instead would decode a frame nobody
+        asked about.
+
+        `total` is the number of sampled moments, which IS known before any of
+        them runs. `done` counts completions, and it is monotonic because it is
+        incremented and read in one step of a single-threaded event loop —
+        progress that went 3, 7, 4 would tell a caller nothing.
+        """
+        sampled = tuple(index for index, (_, cue) in enumerate(entries) if cue is None)
+        total = len(sampled)
+        done = 0
+
+        async def fetch(seconds: float) -> tuple[str, str]:
+            nonlocal done
+            try:
+                outcome = await self._moment(path, seconds)
+            except Exception:
+                outcome = _UNEXPECTED_MOMENT
+            done += 1
+            emit(
+                self._observer,
+                OperationProgressed(operation=_OPERATION, ref=ref, done=done, total=total),
+            )
+            return outcome
+
+        # `return_exceptions=True` as well as the guard inside `fetch`: gather
+        # propagates the first exception it sees, and this handler must not
+        # begin raising from `represent` because it began gathering.
+        outcomes = await asyncio.gather(
+            *(fetch(entries[index][0]) for index in sampled), return_exceptions=True
+        )
+        fetched: list[tuple[str, str] | None] = [None] * len(entries)
+        for index, outcome in zip(sampled, outcomes, strict=True):
+            fetched[index] = _UNEXPECTED_MOMENT if isinstance(outcome, BaseException) else outcome
+        return fetched
+
     async def _moment(self, path: str, seconds: float) -> tuple[str, str]:
         """What to say about one sampled moment, and why.
 
         Without a vision model this still reports the moment — a video is not
         empty because nothing looked at it, which is the scanned-PDF lesson at
         a new site. The line says what was not done rather than being blank.
+
+        The two calls are bounded SEPARATELY, each by the capability it
+        actually spends: extraction is an ffmpeg subprocess and description is
+        a model call over the network. Holding a vision slot for the duration
+        of a decode would spend the endpoint's concurrency on ffmpeg, and a
+        single lock around both would let the slower of the two set the pace
+        for the other.
         """
         try:
-            frame = await self._frames.frame_at(path, seconds)
+            async with self._limit(Capability.FFMPEG):
+                frame = await self._frames.frame_at(path, seconds)
         except Exception:
             frame = None
         if frame is None:
@@ -638,7 +756,8 @@ class VideoHandler:
                 "undescribed",
             )
         try:
-            text = await self._vision.describe(frame, "image/png", _FRAME_PROMPT)
+            async with self._limit(Capability.VISION):
+                text = await self._vision.describe(frame, "image/png", _FRAME_PROMPT)
         except Exception:
             return "(the vision model failed to describe this frame)", "failed"
         if not text.strip():

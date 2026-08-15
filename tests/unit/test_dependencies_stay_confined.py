@@ -47,6 +47,12 @@ CONFINED: dict[str, set[str]] = {
         "adapters/whisper_transcriber.py",
         # asyncio.Semaphore bounds per-capability concurrency.
         "adapters/semaphore_limiter.py",
+        # `asyncio.gather` fetches a video's sampled moments concurrently. No
+        # subprocess is spawned here and no adapter is imported: the handler
+        # awaits the injected extractor and vision ports, and gathering them is
+        # a property of the work (independent, slow, per-moment) rather than of
+        # any particular runtime.
+        "handlers/video.py",
     },
     # shutil.which locates the executable a capability probe is about to run;
     # confined to the one adapter that probes binaries.
