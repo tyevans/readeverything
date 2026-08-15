@@ -15,6 +15,8 @@ import pytest
 from readeverything.adapters.artifact_store import FilesystemArtifactStore, InMemoryArtifactStore
 from readeverything.testing.artifact_compliance import ArtifactStoreCompliance
 
+pytestmark = pytest.mark.integration
+
 
 class TestInMemoryArtifactStoreCompliance(ArtifactStoreCompliance):
     @pytest.fixture

@@ -1,13 +1,21 @@
-"""The README's base-install example, kept honest by a test that runs it.
+"""The README's base-install example, transcribed into a test.
 
-A README example that does not run is a bug report with good formatting.
+This test does not parse or execute the README itself — it is a hand-kept
+transcription of the example that must be updated whenever the example
+changes. A README example with no test at all is a bug report with good
+formatting; this is the weaker but still useful guarantee that the
+transcription runs and its assertions hold.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from readeverything import build_perception, build_tools
+
+pytestmark = pytest.mark.integration
 
 
 async def test_the_readme_example_runs(tmp_path: Path) -> None:
@@ -15,7 +23,7 @@ async def test_the_readme_example_runs(tmp_path: Path) -> None:
     is why the example must stay small enough to assert on.
     """
     (tmp_path / "notes.txt").write_text("the quick brown fox")
-    perception = await build_perception(tmp_path)
+    perception = await build_perception(tmp_path, probe_binaries=False)
     card = await perception.inspect("notes.txt")
     tools = build_tools(perception)
     assert card.kind == "text"

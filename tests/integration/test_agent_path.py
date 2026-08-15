@@ -5,9 +5,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from readeverything.agent.tools import build_tools
 from readeverything.composition import build_perception
 from readeverything.testing.fakes import FakeVision
+
+pytestmark = pytest.mark.integration
 
 
 async def test_an_agent_can_see_a_directory_of_mixed_files(media_root: Path) -> None:

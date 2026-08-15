@@ -4,8 +4,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from readeverything.composition import build_perception
 from readeverything.testing.fakes import FakeVision
+
+pytestmark = pytest.mark.integration
 
 
 async def test_the_same_directory_offers_less_without_a_vision_model(media_root: Path) -> None:

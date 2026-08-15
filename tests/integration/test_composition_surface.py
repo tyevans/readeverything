@@ -4,8 +4,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from readeverything.composition import build_perception
 from readeverything.testing.fakes import FakeVision
+
+pytestmark = pytest.mark.integration
 
 
 async def test_every_registered_handler_is_exported_from_the_front_door(
