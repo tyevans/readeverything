@@ -1,6 +1,6 @@
 import pytest
 
-from readeverything.domain.errors import UnknownAffordanceError
+from readeverything.domain.errors import DomainError, UnknownAffordanceError
 from readeverything.domain.identity import ContentHash, MediaKind, MimeType, SourceRef
 from readeverything.domain.locators import CharSpan
 from readeverything.domain.rendition import Budget, TextContent
@@ -59,6 +59,19 @@ async def test_read_range_clamps_to_the_end_of_the_text() -> None:
     rendition = await _handler().invoke(_ref(), "read_range", ReadRangeParams(start=12, end=9999))
     assert isinstance(rendition.content, TextContent)
     assert rendition.content.text == "amma\n"
+
+
+async def test_read_range_on_an_empty_file_raises_a_domain_error() -> None:
+    """An empty file has no character range; say so rather than invent one."""
+    handler = TextHandler(source=FakeSource({"empty.txt": b""}))
+    ref = SourceRef(
+        uri="empty.txt",
+        mime=MimeType.parse("text/plain"),
+        content_hash=ContentHash("d" * 64),
+        size_bytes=0,
+    )
+    with pytest.raises(DomainError, match="empty"):
+        await handler.invoke(ref, "read_range", ReadRangeParams(start=0, end=5))
 
 
 async def test_an_unknown_affordance_raises() -> None:

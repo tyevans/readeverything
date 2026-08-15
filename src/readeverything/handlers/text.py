@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 from readeverything.domain.affordance import Affordance, DetailLevel
 from readeverything.domain.capability import Capability
 from readeverything.domain.card import Card, Segment
-from readeverything.domain.errors import UnknownAffordanceError
+from readeverything.domain.errors import DomainError, UnknownAffordanceError
 from readeverything.domain.identity import MediaKind, SourceRef
 from readeverything.domain.locator_map import LocatorMap, LocatorSegment
 from readeverything.domain.locators import CharSpan
@@ -97,10 +97,12 @@ class TextHandler:
         if not isinstance(params, ReadRangeParams):
             raise TypeError(f"expected ReadRangeParams, got {type(params).__name__}")
         text, _ = await self._text(ref)
-        start = min(params.start, max(0, len(text) - 1))
+        if not text:
+            raise DomainError(f"{ref.uri} is empty; there is no character range to read")
+        start = min(params.start, len(text) - 1)
         end = min(params.end, len(text))
         if start >= end:
-            start, end = 0, min(1, len(text))
+            start, end = 0, 1
         return Rendition(locator=CharSpan(start, end), content=TextContent(text[start:end]))
 
     async def represent(self, ref: SourceRef, budget: Budget) -> Rendered:
