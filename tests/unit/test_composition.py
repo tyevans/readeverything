@@ -361,3 +361,21 @@ async def test_an_explicitly_injected_limiter_replaces_the_default(tmp_path: Pat
     video = {type(h).__name__: h for h in perception.registry.handlers}["VideoHandler"]
     assert isinstance(video, VideoHandler)
     assert video._limiter is mine
+
+
+async def test_a_caption_extractor_is_wired_without_being_asked_for(tmp_path: Path) -> None:
+    """Unlike a vision model or a transcriber, reading captions needs no
+    configuration, no weights and no endpoint — and the handler only reaches
+    for the extractor when a probe already said a readable track exists.
+
+    A caller should not have to know to ask for the cheapest thing in the
+    library. Before this was wired, an agent asked what a captioned lecture
+    was about spent twelve vision calls and five minutes on a question the
+    file itself answered in a second.
+    """
+    perception = await build_perception(
+        tmp_path, capabilities=CapabilitySet.of({Capability.FFMPEG: "1"})
+    )
+    handlers = [h for h in perception.registry.handlers if isinstance(h, VideoHandler)]
+    assert handlers, "no video handler was registered"
+    assert handlers[0]._captions is not None

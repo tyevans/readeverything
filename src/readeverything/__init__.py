@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from readeverything.adapters.binary_probe import BinaryProbe as BinaryProbe
     from readeverything.adapters.detection import PuremagicDetector as PuremagicDetector
     from readeverything.adapters.ffmpeg_audio import FfmpegAudio as FfmpegAudio
+    from readeverything.adapters.ffmpeg_captions import FfmpegCaptions as FfmpegCaptions
     from readeverything.adapters.hashing import ContentHasher as ContentHasher
     from readeverything.adapters.hashing import StatMemo as StatMemo
     from readeverything.adapters.local_source import LocalFileSource as LocalFileSource
@@ -72,6 +73,7 @@ if TYPE_CHECKING:
     from readeverything.domain.observation import OperationProgressed as OperationProgressed
     from readeverything.domain.observation import OperationStarted as OperationStarted
     from readeverything.domain.rendition import Budget as Budget
+    from readeverything.domain.rendition import CueSource as CueSource
     from readeverything.domain.rendition import Degradation as Degradation
     from readeverything.domain.rendition import ImageContent as ImageContent
     from readeverything.domain.rendition import Rendered as Rendered
@@ -90,6 +92,7 @@ if TYPE_CHECKING:
     from readeverything.pipeline.resolution import ResolutionMemo as ResolutionMemo
     from readeverything.ports.artifacts import ArtifactStore as ArtifactStore
     from readeverything.ports.audio import AudioExtractor as AudioExtractor
+    from readeverything.ports.captions import CaptionExtractor as CaptionExtractor
     from readeverything.ports.detection import MimeDetector as MimeDetector
     from readeverything.ports.handler import MediaHandler as MediaHandler
     from readeverything.ports.hashing import ContentHashing as ContentHashing
@@ -151,7 +154,10 @@ _LAZY: dict[str, str] = {
     "FakeTranscriber": "readeverything.testing.fakes",
     "FakeVision": "readeverything.testing.fakes",
     "FakeVisionRefusing": "readeverything.testing.fakes",
+    "CaptionExtractor": "readeverything.ports.captions",
+    "CueSource": "readeverything.domain.rendition",
     "FfmpegAudio": "readeverything.adapters.ffmpeg_audio",
+    "FfmpegCaptions": "readeverything.adapters.ffmpeg_captions",
     "FileSource": "readeverything.ports.source",
     "FilesystemArtifactStore": "readeverything.adapters.artifact_store",
     "ImageContent": "readeverything.domain.rendition",

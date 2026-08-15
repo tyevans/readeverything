@@ -117,6 +117,7 @@ def _video_handler(
     an import here would otherwise reintroduce.
     """
     from readeverything.adapters.ffmpeg_audio import FfmpegAudio
+    from readeverything.adapters.ffmpeg_captions import FfmpegCaptions
     from readeverything.adapters.ffmpeg_frames import FfmpegFrames
     from readeverything.adapters.ffprobe_streams import FfprobeStreams
     from readeverything.handlers.video import VideoHandler
@@ -125,6 +126,15 @@ def _video_handler(
     # nothing to construct, and `VideoHandler` never touches it without a
     # transcriber to hand its bytes to — so a caller who configured ASR gets a
     # transcript on the video timeline without a second knob to find.
+    #
+    # Captions are wired the same way and for a stronger reason: unlike a
+    # vision model or a transcriber, reading them needs no configuration, no
+    # weights and no endpoint, and the handler only touches the extractor when
+    # the probe already said a readable track exists. A caller should not have
+    # to know to ask for the cheapest thing in the library — and before this
+    # was wired, an agent asked what a captioned lecture was about spent
+    # twelve vision calls and five minutes on a question the file answered in
+    # a second.
     return [
         VideoHandler(
             source=source,
@@ -133,6 +143,7 @@ def _video_handler(
             vision=vision,
             audio=FfmpegAudio(),
             transcriber=transcriber,
+            captions=FfmpegCaptions(),
             observer=observer,
             limiter=limiter,
         )
