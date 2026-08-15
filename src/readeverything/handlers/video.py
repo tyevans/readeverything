@@ -365,7 +365,8 @@ class VideoHandler:
         bounds = self._bounds(times, facts)
         chunks: list[str] = []
         segments: list[LocatorSegment] = []
-        barriers: list[int] = []
+        moment_barriers: list[int] = []
+        moment_offsets: list[int] = []
         missing: list[float] = []
         failed: list[float] = []
         cursor = 0
@@ -379,20 +380,76 @@ class VideoHandler:
             if index:
                 # One barrier per moment boundary: a new moment's first
                 # character is a hard chunk break, so there are exactly as many
-                # barriers as sample count minus one.
-                barriers.append(cursor)
+                # barriers as sample count minus one. This is the status quo
+                # `_barriers` falls back to when scene detection finds nothing
+                # to say or fails outright.
+                moment_barriers.append(cursor)
+            moment_offsets.append(cursor)
             segments.append(
                 LocatorSegment(CharSpan(cursor, cursor + len(chunk)), TimeSpan(start, end))
             )
             cursor += len(chunk)
             chunks.append(chunk)
+        barriers, scene_degradation = await self._barriers(
+            path, tuple(t for t, _ in bounds), moment_offsets, moment_barriers
+        )
         return self._fit(
             "".join(chunks),
             tuple(segments),
-            tuple(barriers),
+            barriers,
             budget,
-            self._timeline_degradations(missing, failed),
+            (*self._timeline_degradations(missing, failed), *scene_degradation),
         )
+
+    async def _barriers(
+        self,
+        path: str,
+        starts: tuple[float, ...],
+        moment_offsets: list[int],
+        moment_barriers: list[int],
+    ) -> tuple[tuple[int, ...], tuple[Degradation, ...]]:
+        """Hard chunk breaks: at the video's scene cuts when detection finds
+        them, at every moment boundary otherwise.
+
+        "No cuts found" and "detection failed" are distinguishable outcomes of
+        `scene_cuts` (see `ports/frames.py`): the first degrades to the status
+        quo silently, since an unedited video's timeline is exactly right as
+        every-moment barriers. The second degrades the same way but reports
+        why, so a caller cannot mistake a broken detector for uniform content.
+        """
+        try:
+            cuts = await self._frames.scene_cuts(path)
+        except Exception as exc:
+            return tuple(moment_barriers), (
+                Degradation(
+                    what="scene detection failed",
+                    detail=(
+                        f"scene-cut detection could not run ({exc}); barriers fall back to "
+                        "one per sampled moment"
+                    ),
+                ),
+            )
+        if not cuts:
+            return tuple(moment_barriers), ()
+        offsets = {
+            moment_offsets[self._bucket(cut, starts)]
+            for cut in cuts
+            if self._bucket(cut, starts) > 0
+        }
+        if not offsets:
+            return tuple(moment_barriers), ()
+        return tuple(sorted(offsets)), ()
+
+    @staticmethod
+    def _bucket(seconds: float, starts: tuple[float, ...]) -> int:
+        """The index of the last sample whose start is at or before `seconds`."""
+        index = 0
+        for i, start in enumerate(starts):
+            if start <= seconds:
+                index = i
+            else:
+                break
+        return index
 
     async def _moment(self, path: str, seconds: float) -> tuple[str, str]:
         """What to say about one sampled moment, and why.

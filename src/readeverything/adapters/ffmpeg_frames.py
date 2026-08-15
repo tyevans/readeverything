@@ -36,13 +36,21 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import re
+
+from readeverything.domain.errors import InfrastructureError
+
+#: `showinfo` writes lines like `... pts_time:2.503 ...` to stderr, one per
+#: selected frame. Only the number after `pts_time:` is wanted.
+_PTS_TIME = re.compile(r"pts_time:([0-9]+(?:\.[0-9]+)?)")
 
 
 class FfmpegFrames:
-    """One decoded video frame as PNG bytes, via `ffmpeg`."""
+    """One decoded video frame as PNG bytes, via `ffmpeg`; and its scene cuts."""
 
-    def __init__(self, *, timeout_s: float = 10.0) -> None:
+    def __init__(self, *, timeout_s: float = 10.0, scene_timeout_s: float = 30.0) -> None:
         self._timeout_s = timeout_s
+        self._scene_timeout_s = scene_timeout_s
 
     async def frame_at(self, path: str, seconds: float) -> bytes | None:
         """One frame as PNG bytes, or None if there is no frame at that time.
@@ -95,3 +103,46 @@ class FfmpegFrames:
         if not stdout:
             return None
         return stdout
+
+    async def scene_cuts(self, path: str, threshold: float = 0.4) -> tuple[float, ...]:
+        """Timestamps where the content changes sharply, via `showinfo`.
+
+        Unlike `frame_at`, this RAISES on a genuine failure — see
+        `ports/frames.py`. `path` and `threshold` are separate argv elements,
+        never string-formatted into a shell command; only the filter
+        expression itself, which takes no untrusted input, is built as a
+        string.
+        """
+        try:
+            process = await asyncio.create_subprocess_exec(
+                "ffmpeg",
+                "-i",
+                path,
+                "-filter:v",
+                f"select='gt(scene,{threshold})',showinfo",
+                "-f",
+                "null",
+                "-",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except OSError as exc:
+            raise InfrastructureError(f"could not start ffmpeg: {exc}") from exc
+
+        try:
+            _stdout, stderr = await asyncio.wait_for(
+                process.communicate(), timeout=self._scene_timeout_s
+            )
+        except TimeoutError as exc:
+            with contextlib.suppress(ProcessLookupError):
+                process.kill()
+            await process.wait()
+            raise InfrastructureError(f"ffmpeg scene detection timed out on {path!r}") from exc
+
+        if process.returncode != 0:
+            raise InfrastructureError(
+                f"ffmpeg scene detection failed on {path!r} (exit {process.returncode}): "
+                f"{stderr.decode('utf-8', errors='replace').strip()}"
+            )
+        text = stderr.decode("utf-8", errors="replace")
+        return tuple(float(match) for match in _PTS_TIME.findall(text))

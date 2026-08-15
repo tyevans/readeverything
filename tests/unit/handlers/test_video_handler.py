@@ -79,10 +79,16 @@ class _RaisingFrames:
     async def frame_at(self, path: str, seconds: float) -> bytes | None:
         raise RuntimeError("ffmpeg exploded")
 
+    async def scene_cuts(self, path: str, threshold: float = 0.4) -> tuple[float, ...]:
+        raise RuntimeError("ffmpeg exploded")
+
 
 class _NoFrames:
     async def frame_at(self, path: str, seconds: float) -> bytes | None:
         return None
+
+    async def scene_cuts(self, path: str, threshold: float = 0.4) -> tuple[float, ...]:
+        return ()
 
 
 class _RefusingVision:
@@ -295,11 +301,39 @@ async def test_a_missing_frame_rate_falls_back_rather_than_dividing_by_none() ->
 
 
 async def test_a_barrier_sits_at_every_moment_boundary(sample_video: str) -> None:
+    """`sample_video` is uniform testsrc content: no real scene cut exists, so
+    detection finding none falls back to the every-moment status quo."""
     rendered = await _handler(sample_video, vision=FakeVision(), interval=2.0).represent(
         _ref(), Budget(max_chars=None)
     )
     starts = [s.span.start for s in rendered.locator_map.segments][1:]
     assert list(rendered.barriers) == starts
+
+
+async def test_barriers_land_at_cuts(scene_cut_video: str) -> None:
+    rendered = await _handler(scene_cut_video, vision=FakeVision()).represent(
+        _ref(), Budget(max_chars=None)
+    )
+    assert rendered.barriers
+    for barrier in rendered.barriers:
+        assert 0 < barrier < len(rendered.text)
+
+
+async def test_scene_detection_failing_is_reported_and_falls_back() -> None:
+    """Detection failing and detection finding nothing must be distinguishable:
+    the failure case records a degradation, the empty-result case does not."""
+
+    class _FailingSceneDetection:
+        async def frame_at(self, path: str, seconds: float) -> bytes | None:
+            return None
+
+        async def scene_cuts(self, path: str, threshold: float = 0.4) -> tuple[float, ...]:
+            raise RuntimeError("ffmpeg exploded")
+
+    rendered = await _stub_handler(
+        _facts(duration_s=5.0), vision=FakeVision(), frames=_FailingSceneDetection()
+    ).represent(_ref(), Budget(max_chars=None))
+    assert any("scene detection failed" in d.what for d in rendered.degradations)
 
 
 async def test_without_vision_the_timeline_still_reports_its_structure(
