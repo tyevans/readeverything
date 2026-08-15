@@ -17,6 +17,7 @@ into an adapter.
 
 from __future__ import annotations
 
+from enum import Enum
 from typing import ClassVar
 
 try:
@@ -50,7 +51,13 @@ from readeverything.ports.source import SourceReader
 #: document is what breaks the map.
 PAGE_SEPARATOR = "\n"
 
-_EMPTY_PAGE = "(this page contains no extractable text)"
+
+class _PageState(Enum):
+    """What a page turned out to be, once its text layer came back empty."""
+
+    EXTRACTED = "extracted"
+    SCANNED = "scanned"
+    BLANK = "blank"
 
 
 def _page_text(page: pdfium.PdfPage) -> str:
@@ -59,6 +66,45 @@ def _page_text(page: pdfium.PdfPage) -> str:
         return str(textpage.get_text_range(index=0, count=-1))
     finally:
         textpage.close()
+
+
+def _page_state(page: pdfium.PdfPage, text: str) -> _PageState:
+    """Extracted, scanned, or genuinely blank.
+
+    Measured on real files: a scanned page and a blank page are IDENTICAL
+    through the text layer — both report zero characters and empty text. The
+    page's object list is what distinguishes them, a scan carrying at least one
+    image object where a blank page carries none.
+
+    Without this, a scanned contract is reported as an empty document, which is
+    a false claim about the file rather than an honest report about the text
+    layer.
+    """
+    if text.strip():
+        return _PageState.EXTRACTED
+    if any(True for _ in page.get_objects()):
+        return _PageState.SCANNED
+    return _PageState.BLANK
+
+
+def _placeholder(state: _PageState, number: int) -> str:
+    """What stands in the flattened text for a page that extracted nothing.
+
+    A scan and a blank page must not read the same. The scan's line describes
+    where its content actually is; the blank page's says it is blank. Neither
+    says the document is empty, which is a claim about the document rather
+    than about its text layer.
+    """
+    if state is _PageState.SCANNED:
+        return f"(page {number} has no text layer; its content is in images and was not read)"
+    return f"(page {number} is blank)"
+
+
+def _listed(numbers: list[int], limit: int = 10) -> str:
+    head = ", ".join(str(number) for number in numbers[:limit])
+    if len(numbers) <= limit:
+        return head
+    return f"{head} and {len(numbers) - limit} more"
 
 
 class PdfHandler:
@@ -149,10 +195,14 @@ class PdfHandler:
         if document is None:
             return self._unreadable(ref, budget)
         try:
-            bodies = [_page_text(document[number]) for number in range(len(document))]
+            pages: list[tuple[str, _PageState]] = []
+            for index in range(len(document)):
+                page = document[index]
+                body = _page_text(page)
+                pages.append((body, _page_state(page, body)))
         finally:
             document.close()
-        if not bodies:
+        if not pages:
             # Opened fine and carries no pages. Saying "could not be opened"
             # here would be a false report about a file this handler read.
             return self._nothing_to_read(
@@ -166,19 +216,67 @@ class PdfHandler:
         chunks: list[str] = []
         segments: list[LocatorSegment] = []
         barriers: list[int] = []
+        scanned: list[int] = []
+        blanks: list[int] = []
         cursor = 0
-        for number, body in enumerate(bodies):
-            chunk = (body if body.strip() else _EMPTY_PAGE) + PAGE_SEPARATOR
-            if number:
+        for index, (body, state) in enumerate(pages):
+            number = index + 1  # `PageRef` counts as a reader does; pdfium does not.
+            if state is _PageState.SCANNED:
+                scanned.append(number)
+            elif state is _PageState.BLANK:
+                blanks.append(number)
+            content = body if state is _PageState.EXTRACTED else _placeholder(state, number)
+            chunk = content + PAGE_SEPARATOR
+            if index:
                 # A barrier is where a new page's first character begins, so
                 # there is exactly one per page break: page count minus one.
                 barriers.append(cursor)
-            segments.append(
-                LocatorSegment(CharSpan(cursor, cursor + len(chunk)), PageRef(number + 1))
-            )
+            segments.append(LocatorSegment(CharSpan(cursor, cursor + len(chunk)), PageRef(number)))
             cursor += len(chunk)
             chunks.append(chunk)
-        return self._fit("".join(chunks), tuple(segments), tuple(barriers), budget, ())
+        return self._fit(
+            "".join(chunks),
+            tuple(segments),
+            tuple(barriers),
+            budget,
+            self._page_degradations(scanned, blanks),
+        )
+
+    def _page_degradations(self, scanned: list[int], blanks: list[int]) -> tuple[Degradation, ...]:
+        """One report per state, not one per page — a 400-page scan is one fact.
+
+        The scanned report is the whole point of telling the two apart: an
+        agent that knows a page's text is in an image knows to look harder,
+        where "empty" would have told it to stop.
+        """
+        degradations: list[Degradation] = []
+        if scanned:
+            attempted = (
+                "OCR was not attempted, as no recogniser is configured"
+                if self._recognizer is None
+                else "OCR was not attempted"
+            )
+            degradations.append(
+                Degradation(
+                    what="scanned pages: image content, no text layer",
+                    detail=(
+                        f"{len(scanned)} page(s) carry image content and no text layer "
+                        f"(page {_listed(scanned)}); no text could be extracted from them "
+                        f"and {attempted}"
+                    ),
+                )
+            )
+        if blanks:
+            degradations.append(
+                Degradation(
+                    what="blank pages",
+                    detail=(
+                        f"{len(blanks)} page(s) carry no text and no page objects "
+                        f"(page {_listed(blanks)}); they are blank"
+                    ),
+                )
+            )
+        return tuple(degradations)
 
     def _unreadable(self, ref: SourceRef, budget: Budget) -> Rendered:
         return self._nothing_to_read(

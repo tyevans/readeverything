@@ -1,5 +1,5 @@
 import pytest
-from tests.fixtures_pdf import born_digital, many_pages
+from tests.fixtures_pdf import blank, born_digital, many_pages, scanned_like
 
 from readeverything.adapters.pdfium_probe import PdfiumProbe
 from readeverything.domain.identity import ContentHash, MimeType, SourceRef
@@ -140,6 +140,55 @@ async def test_a_budget_of_zero_still_keeps_one_character() -> None:
     """A zero-width rendition is inexpressible: `CharSpan(0, 0)` raises."""
     rendered = await _handler(born_digital(["Alpha."])).represent(_ref(), Budget(max_chars=0))
     assert len(rendered.text) == 1
+
+
+async def test_a_scanned_page_is_never_reported_as_empty() -> None:
+    """The project's recurring defect at a new site.
+
+    "This document is empty" is a claim about the document. What was observed
+    is "the text layer is empty" — for a scan those are different, and the
+    difference is whether an agent concludes a contract says nothing or knows
+    to look harder.
+    """
+    handler = _handler(scanned_like())
+    rendered = await handler.represent(_ref(), Budget(max_chars=None))
+
+    assert "empty" not in rendered.text.lower()
+    assert any("scan" in d.what.lower() or "image" in d.what.lower() for d in rendered.degradations)
+
+
+async def test_a_blank_page_and_a_scanned_page_do_not_produce_the_same_text() -> None:
+    """Both have zero characters in the text layer. If the handler cannot tell
+    them apart, it is guessing about one of them."""
+    scanned = await _handler(scanned_like()).represent(_ref(), Budget(max_chars=None))
+    empty = await _handler(blank()).represent(_ref(), Budget(max_chars=None))
+    assert scanned.text != empty.text
+
+
+async def test_a_scan_without_a_vision_capability_says_so_and_does_not_ocr() -> None:
+    """Negotiation working: no recogniser means no OCR and an honest report."""
+    handler = _handler(scanned_like(), recognizer=None)
+    rendered = await handler.represent(_ref(), Budget(max_chars=None))
+    assert any(
+        "no text could be extracted" in d.detail.lower() or "not attempted" in d.detail.lower()
+        for d in rendered.degradations
+    )
+
+
+async def test_a_blank_page_is_called_blank_and_not_a_scan() -> None:
+    """The other half of the distinction: a blank page must not be described as
+    carrying image content nobody read."""
+    rendered = await _handler(blank()).represent(_ref(), Budget(max_chars=None))
+    assert "blank" in rendered.text.lower()
+    assert all("scan" not in d.what.lower() for d in rendered.degradations)
+
+
+async def test_a_page_that_extracts_nothing_still_owns_a_character() -> None:
+    """`CharSpan` rejects a zero-width span, so a page contributing no text
+    would break the map outright. It owns its separator instead."""
+    rendered = await _handler(blank(3)).represent(_ref(), Budget(max_chars=None))
+    assert len(rendered.locator_map.segments) == 3
+    assert rendered.locator_map.resolve(len(rendered.text) - 1) == PageRef(3)
 
 
 class TestPdfHandlerCompliance(MediaHandlerCompliance):
