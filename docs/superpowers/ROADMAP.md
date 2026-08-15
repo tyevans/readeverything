@@ -169,3 +169,21 @@ measured before it is written down, and every cycle's most valuable finding so
 far has come from running something nobody had run — a probe against real
 binaries, a seek past the end of a real video, a serializer against a real
 union.
+
+**Cycle 7's instance, and it is the sharpest yet.** The shape appeared in a test
+written *to enforce the shape's absence*. Spec §1.1 promised a caller "sees each
+file start... and each file finish", so the integration test asserted every file
+in a directory emits `OperationFinished`. Nothing in the design ever made that
+true: `grep -c "emit(" src/readeverything/handlers/*.py` returned text 0,
+binary 0, image 0, pdf 0, audio 3, video 3. Two of six handlers spoke. The spec
+had contradicted itself again — §2.4 scoped emission to "both expensive paths,
+video and audio" while §7 promised the caller could count *model calls*, which
+`ImageHandler` and `PdfHandler`'s OCR path make and neither reported.
+
+The specific lesson, distinct from prior cycles: **an acceptance sentence is a
+claim about code too.** §1.1 was written before the handlers existed, was never
+re-checked against them, and its authority made a false test look correct — the
+test was graded against the prose rather than the program. Prose in a spec decays
+exactly like a docstring; being labelled "acceptance" grants it no immunity, and
+a test derived from unverified prose inherits the error instead of catching it.
+Both counts above came from running `grep`, not from reading either document.
