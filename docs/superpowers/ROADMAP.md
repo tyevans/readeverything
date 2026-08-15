@@ -18,13 +18,14 @@ observable, with strong DDD and SOLID vision, built from real user stories.
 | 3. Integration & first product | Plan 3 | `60ed781` | 335 tests, 94.69%, composition root, cache wired, capability discovery, integration tier, README |
 | 4. The document family | Plan 4 | `d4f564b` | 381 tests, 94.16%. PDF via pypdfium2. First honest producers of `PageRef`, `BBox`-on-a-page, and `Rendered.barriers` |
 | 5. The moving image | Plan 5 | `da4d0e6` | 453 tests, 92.57%. Video via ffmpeg. `TimeSpan` gets its producer — **every locator type is now real**. `BinaryProbe` fixed |
+| 6. The spoken word | Plan 6 | `2e86b6c` | 537 tests, 92.62%. Audio via faster-whisper; `TranscriptCue` gets its producer; video interleaves cues with frames; `domain/timeline.py` shared by both |
 
 ## The two tracks, and why this order
 
 The destination needs both:
 
-- **"any file"** — media handlers. Today: text, images, PDF, video, binary
-  fallback. Still missing: audio, office documents, archives.
+- **"any file"** — media handlers. Today: text, images, PDF, video, audio,
+  binary fallback. Still missing: office documents, archives.
 - **"ask a question, get real answers"** — the query layer: chunk `Rendered`,
   index it, retrieve, and answer with citations that resolve to exact source
   locations.
@@ -51,25 +52,29 @@ its original scope: transcription moved to Cycle 6 because the model server's
 support for timestamped transcription is unverified and designing an honest
 degradation for that deserves its own cycle.
 
-**Cycle 6 — the spoken word (audio and transcription).**
-Ports: `AudioExtractor`, `Transcriber`. Audio is the last common media family
-with no handler, and a recorded meeting is the file people most want to ask
-questions of. Open question this cycle must settle by testing rather than
-assuming: does the model server at `192.168.1.14:8080` implement
-`/v1/audio/transcriptions` with `verbose_json` and `timestamp_granularities`?
-If not, transcription degrades to one untimed block — which must be reported,
-not silently produced. `faster-whisper` (MIT, word timestamps, needs an explicit
-local model path since the library downloads nothing implicitly) is the offline
-alternative. Diarization stays out: research recommends sherpa-onnx (Apache-2.0,
-ONNX, CPU, no gated weights) over pyannote (gated Hugging Face weights, pulls
-torch), which flips Spec 1 §7's default and is its own decision.
+**Cycle 6 — the spoken word.** ✅ **Done.** `AudioExtractor`, `Transcriber`,
+`AudioHandler`, video transcript interleaving, and `domain/timeline.py` — one
+tiling rule for three callers. Transcription is local (the server returns 501,
+settled by request rather than by reading a spec). Diarization stayed out:
+flipping Spec 1 §7's pyannote default to sherpa-onnx (Apache-2.0, ONNX, CPU, no
+gated weights) is a real decision, not a footnote. `TranscriptCue.speaker`
+remains `None` — the field admits ignorance rather than guessing.
 
-**Cycle 7 — observability and concurrency.**
-Carried from Plan 3's findings: the library has NO logging, tracing, or metrics
-anywhere in `src/`, and nothing runs concurrent work. A whole-tree index and
-ffmpeg-driven extraction both need concurrency; debugging either needs
-observability. Per-capability semaphores were deferred from Spec 1 §14b on the
-grounds that nothing did concurrent expensive work — Cycle 5 ends that.
+**Cycle 7 — observability and concurrency. NEXT.**
+Carried since Plan 3: the library has NO logging, tracing, or metrics anywhere
+in `src/`, and nothing runs concurrent work. The case is now overwhelming:
+`represent()` on a video samples frames and calls a vision model per sample, and
+on audio runs a whole transcription — the two most expensive operations the
+library performs, both sequential, both invisible while they run. A caller
+waiting ninety seconds on a long recording has no way to tell progress from a
+hang.
+
+Per-capability semaphores were deferred from Spec 1 §14b because nothing did
+concurrent expensive work. Cycles 5 and 6 ended that.
+
+This cycle is also the natural home for the OCR-in-`represent()` budget owed
+since Cycle 4, since both need the same thing: a way to bound and observe
+expensive model work.
 
 **Cycle 8 — the query layer.**
 `ask(path, question) -> sourced answer`. Chunking `Rendered` into retrievable
