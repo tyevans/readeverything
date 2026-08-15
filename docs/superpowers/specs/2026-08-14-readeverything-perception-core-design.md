@@ -1,7 +1,22 @@
 # readeverything — Perception Core Design
 
 **Date:** 2026-08-14
-**Status:** Approved for planning
+**Status:** Implemented and amended. The perception core is built and merged
+(`main`, 150 tests, five quality gates green). This spec was amended afterwards
+against what execution actually taught — the architecture held, but five
+statements here were wrong or incomplete and are corrected in place:
+
+| § | Amendment |
+| --- | --- |
+| §4.7 | Withdrew the "barriers are a subset of segment boundaries" law — over-specified, and it would forbid a correct video representation |
+| §5 | Added the missing `ContentHashing` port |
+| §6 | The no-unsupported-file guarantee is a property to defend, not assume |
+| §10 | Recorded the three-tools decision; named where the never-raises guarantee actually begins |
+| §13 | Added "a law must be able to fail", after two shipped laws turned out to constrain nothing |
+
+Eight further defects were found in the *implementation plan* during execution
+and corrected there. That the spec needed five corrections and the plan eight,
+while the architecture itself needed none, is the useful signal.
 **Scope:** Spec 1 of 2. This spec covers the perception core: domain model, ports,
 mimetype registry, handler families, tool pack, artifact cache, and the deepagents
 backend adapter. Spec 2 will cover the query interface (chunking into redstring,
@@ -226,7 +241,15 @@ Laws (property-tested):
 - **Total**: every offset in `[0, len(text))` resolves.
 - **Monotonic**: resolution never goes backwards.
 - **Non-overlapping**: segments partition the range.
-- **Barriers are a subset of segment boundaries.**
+
+An earlier draft required **barriers to be a subset of segment boundaries**.
+That is withdrawn: it is over-specified and would forbid a correct video
+representation. A scene cut can fall mid-utterance — someone keeps talking
+across the cut — so a barrier at the cut lands inside a transcript cue's
+segment. Chunking there is fine: both halves still resolve to that cue's
+`TimeSpan`, so the citation stays correct. What `Rendered` actually enforces
+is that barriers lie within the text and are sorted and unique, which is
+sufficient.
 
 ### 4.8 Capability
 
@@ -256,6 +279,7 @@ collaborators annotate the slimmest slice they use.
 | --- | --- |
 | `SourceStat` / `SourceReader` / `SourceLister` (`FileSource`) | Existence and size; streamed bytes and ranged reads; directory walking. |
 | `MimeDetector` | Content-sniffed mimetype; filename is a tiebreak only. |
+| `ContentHashing` | `async hash(uri) -> ContentHash`. Added after Plan 1: `Perception` initially depended on the concrete `ContentHasher`, the one non-hexagonal seam in the core. import-linter cannot catch it, because `pipeline` legitimately sits above `adapters`. Without this port a caller cannot supply a precomputed or remote hash without subclassing. |
 | `ArtifactStore` | Content-addressed immutable put/get of derived artifacts. |
 | `MediaProbe` | Container/stream metadata without decoding. |
 | `FrameExtractor` | Frame at time, frames over a range, scene-change detection. |
@@ -301,6 +325,14 @@ Handlers are stateless and receive every capability by constructor injection.
 Ties are broken by explicit `priority`, so a caller can shadow a bundled handler
 without forking. **There is no "unsupported file" error path** — the worst
 outcome is a thin facts-only card.
+
+That last property is not free, and Plan 1 found it briefly untrue. It holds
+only if nothing between the caller and the fallback can raise, and detection
+sits in that path: an unguarded `puremagic.magic_string` would have propagated
+instead of falling through to `application/octet-stream`, and the dependency
+floor is unbounded so a future version could start raising. **Every call on the
+path to the fallback must be unable to escape it** — this is a property to be
+defended in code, not an assumption to be stated here.
 
 ### Capability filtering (two stages)
 
@@ -449,14 +481,30 @@ corrupting the old one's provenance.
 
 ### Tool pack (framework-agnostic)
 
-`agent/` materializes capability-filtered affordances into LangChain tools:
-`inspect_path`, plus one tool per surviving affordance, with `description` and
-`params` taken directly from the `Affordance` declaration.
+**Three tools, not one per affordance.** Affordances are per-mimetype and
+therefore per-file, so a tool-per-affordance would need a tool list that changes
+with whatever the agent last looked at — which no agent framework supports and
+no model handles well. Instead `inspect_path` returns the card *including each
+affordance's JSON schema*, and `invoke_affordance` runs one by name;
+`list_paths` walks a tree. **The card is the discovery mechanism**, which is
+progressive disclosure made concrete. The consequence is that the model learns
+this file's tools at runtime rather than from its system prompt, and any other
+agent surface — including the deepagents adapter below — must stay consistent
+with that.
 
 **The tool pack never raises.** Every tool returns a structured result; the
 raise-to-return conversion is a single decorator in `agent/`. A traceback
 reaching a model is a wasted and unrecoverable turn. This mirrors deepagents'
 `BackendProtocol`, whose methods return structured results rather than raising.
+
+The guarantee has a boundary worth naming, because Plan 1 found it leaking
+there. The decorator wraps the tool *body*, but LangChain's `StructuredTool`
+validates arguments against `args_schema` **before** the body runs, so a
+malformed call raised `ValidationError` out of `ainvoke` untouched — on exactly
+the input the guarantee exists for, since tool arguments are model-authored and
+therefore untrusted. Framework-level validation must be routed into the same
+structured shape (`handle_validation_error`, or validating inside the body).
+**The guarantee begins at the framework boundary, not at our function.**
 
 ### deepagents backend decorator (optional, `[deepagents]` extra)
 
@@ -516,6 +564,27 @@ arguments.
 `FileSourceCompliance`, `MimeDetectorCompliance`, `TranscriptionCompliance`,
 `DiarizerCompliance`, `VisionCompliance`.
 
+### A law must be able to fail
+
+These suites ship in the wheel, so whatever they actually check is what
+third-party handler authors inherit. **A law that cannot fail is worse than no
+law: it certifies nothing while looking rigorous.** Plan 1 shipped two such
+laws before they were caught.
+
+- One asserted `budget.permits(len(text)) or degradations` — satisfiable by a
+  handler that truncated silently (it fits) *and* by one that reported a
+  degradation without ever truncating (it cried wolf). It constrained neither
+  direction. The fix compares against an unbounded render: shorter than
+  unbounded *requires* a degradation, equal to unbounded *forbids* one.
+- Another asserted that a `Rendered`'s map covers its text — which
+  `Rendered.__post_init__` already enforces, so any handler returning a
+  `Rendered` at all passed.
+
+Two practices follow, and both are requirements rather than suggestions:
+**every law is exercised against a deliberately-broken handler** that violates
+exactly that law and no other; and when writing a law, state what a broken
+implementation would do differently, and check the assertion distinguishes it.
+
 ### Handler laws (encoded in the suites)
 
 - `describe()` depends only on content: same bytes, different path, identical card.
@@ -523,7 +592,8 @@ arguments.
   Drift between the two would make capability negotiation a lie.
 - Every `Rendition` locator lies within the source's bounds.
 - `LocatorMap` is total, monotonic, and non-overlapping (Hypothesis).
-- Barriers are a subset of segment boundaries.
+- Truncation is announced and announcements are truthful, checked in both
+  directions against an unbounded render.
 
 ### Fixtures are generated, not committed
 
@@ -571,6 +641,20 @@ OS binaries (ffmpeg, ffprobe, exiftool, libreoffice, tesseract) are discovered b
 `BinaryProbe` at composition time with install hints in the error path, never at
 import.
 
+### Reference model deployment
+
+OpenAI-compatible endpoint at `http://192.168.1.14/v1/`, model
+`qwen3.8-27b-mtp` (multimodal: images and video, documents, STEM diagrams,
+long-form video).
+
+This is configuration, not environment: the base URL, model id and API key are
+constructor arguments to the adapter, and `test_reads_no_environment` enforces
+that nothing below the composition root reads them from the process
+environment. The value is recorded here so the `capability_fingerprint` has a
+known referent — swapping this model must change the artifact cache key.
+
+Live tests against it carry the `live` marker and are deselected by default.
+
 ### Environment status on the reference machine
 
 Present: ffmpeg, ffprobe, exiftool, pdftotext, pdftoppm, libreoffice.
@@ -578,6 +662,43 @@ Absent: tesseract, pandoc, mediainfo. No NVIDIA GPU — diarization and local AS
 are CPU-bound, which is why server-side ASR is the default.
 
 ---
+
+## 14b. Carried out of Plan 1
+
+Recorded here rather than lost, because each is a decision someone will
+otherwise rediscover.
+
+**Owed early in the next plan, and getting more expensive:**
+- Annotate `Perception.hasher` against the new `ContentHashing` port (§5). Every
+  handler added first makes this a wider change.
+- Fix `artifact_key`'s `json.dumps(..., default=str)`: `{"path": Path("a")}` and
+  `{"path": "a"}` collide on one key. Free now — no caller passes non-primitives
+  and the cache is not wired — and a silent wrong-answer bug once it is.
+
+**Owed with cache wiring:** `Perception._resolve` re-reads, re-detects and
+re-hashes on every `inspect`/`invoke`/`represent`, so a large-file `invoke`
+re-hashes per affordance call. Three call sites change together.
+
+**Ports specified but deliberately unbuilt**, each landing with the handler that
+implements it: `MediaProbe`, `FrameExtractor`, `AudioExtractor`, `Transcriber`,
+`Diarizer`, `VisionModel`, `TextModel`, `TextRecognizer`, `BinaryProbe`. A
+Protocol with no implementer is untested surface.
+
+**Also unbuilt:** per-capability concurrency semaphores (nothing yet does
+concurrent expensive work); generated media fixtures (they arrive with the
+handlers needing them).
+
+**Small and carried:** no test for `BinaryHandler` at `max_chars=0` (correct by
+trace — it returns one character because `CharSpan(0, 0)` raises, and the
+overrun is announced); `resolve_span` scans to the end of the map rather than
+stopping at the first non-overlapping segment; `LocatorMap.__post_init__` makes
+two O(n) passes; coverage passes at 91% against a 90% floor, which is under a
+point of headroom.
+
+**The largest unvalidated assumption:** nothing has touched a real model server.
+Capability negotiation, the `VisionModel` port shape and the
+`capability_fingerprint` are all proven against fakes only. The next plan should
+close that before widening handler coverage.
 
 ## 15. Deferred to Spec 2
 
