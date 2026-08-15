@@ -16,6 +16,12 @@ answer.
 **Content blocks.** Some providers return a list of typed blocks rather than a
 string. Flattening the text blocks is not a nicety — a bare `str()` of the list
 would index a Python repr.
+
+These are kept distinct from a third case: a content shape this adapter does
+not recognise at all (an int, a bare dict, `None`). Collapsing that into
+"empty completion" would send someone debugging an unfamiliar
+OpenAI-compatible server toward reasoning budgets instead of toward the actual
+problem, an unrecognised response shape.
 """
 
 from __future__ import annotations
@@ -29,7 +35,14 @@ from langchain_core.messages import HumanMessage
 from readeverything.domain.errors import InfrastructureError
 
 
-def _flatten(content: Any) -> str:
+def _flatten(content: Any) -> str | None:
+    """The text of a completion, or None if the shape was not recognised.
+
+    A list containing only reasoning or tool blocks flattens to `""`, and that
+    genuinely IS an empty completion — the model produced no text. What must
+    not be conflated with it is a response shape we do not understand at all,
+    which is a different failure with a different fix.
+    """
     if isinstance(content, str):
         return content
     if isinstance(content, list):
@@ -38,9 +51,11 @@ def _flatten(content: Any) -> str:
             if isinstance(block, str):
                 parts.append(block)
             elif isinstance(block, dict) and block.get("type") == "text":
-                parts.append(str(block.get("text", "")))
+                text = block.get("text", "")
+                if isinstance(text, str):
+                    parts.append(text)
         return "".join(parts)
-    return ""
+    return None
 
 
 class LangChainVisionModel:
@@ -65,7 +80,13 @@ class LangChainVisionModel:
             response = await self._chat.ainvoke([message])
         except Exception as exc:
             raise InfrastructureError(f"vision model call failed: {exc}") from exc
-        text = _flatten(response.content).strip()
+        flattened = _flatten(response.content)
+        if flattened is None:
+            raise InfrastructureError(
+                f"vision model {self.model_id} returned an unrecognised content shape: "
+                f"{type(response.content).__name__}"
+            )
+        text = flattened.strip()
         if not text:
             raise InfrastructureError(
                 f"vision model {self.model_id} returned an empty completion; "

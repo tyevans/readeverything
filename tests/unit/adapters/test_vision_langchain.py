@@ -102,6 +102,48 @@ async def test_a_transport_failure_becomes_an_infrastructure_error() -> None:
         await model.describe(PNG, "image/png", "what is this")
 
 
+async def test_an_unrecognised_content_shape_is_reported_as_such() -> None:
+    """Not an 'empty completion' — that diagnosis would send a debugger the wrong way.
+
+    `AIMessage` itself validates `content` as `str | list`, so a genuinely
+    unrecognised shape (an int) can only arrive via a chat model that skips
+    that validation — exactly the kind of loosely-typed third-party response
+    this adapter must tolerate.
+    """
+
+    class _Response:
+        content = 42
+
+    class _Weird:
+        async def ainvoke(self, messages: list[BaseMessage], **kwargs: object) -> _Response:
+            return _Response()
+
+    model = LangChainVisionModel(chat=_Weird(), model_id="test/model@1")  # type: ignore[arg-type]
+    with pytest.raises(InfrastructureError, match="unrecognised content shape"):
+        await model.describe(PNG, "image/png", "what is this")
+
+
+async def test_a_list_of_only_reasoning_blocks_is_an_empty_completion() -> None:
+    """A recognised shape that contains no text IS the reasoning-budget case."""
+
+    class _Reasoning:
+        async def ainvoke(self, messages: list[BaseMessage], **kwargs: object) -> AIMessage:
+            return AIMessage(content=[{"type": "reasoning", "text": "thinking..."}])
+
+    model = LangChainVisionModel(chat=_Reasoning(), model_id="test/model@1")  # type: ignore[arg-type]
+    with pytest.raises(InfrastructureError, match="empty completion"):
+        await model.describe(PNG, "image/png", "what is this")
+
+
+async def test_a_list_of_bare_strings_is_flattened() -> None:
+    class _Strings:
+        async def ainvoke(self, messages: list[BaseMessage], **kwargs: object) -> AIMessage:
+            return AIMessage(content=["a green ", "square"])
+
+    model = LangChainVisionModel(chat=_Strings(), model_id="test/model@1")  # type: ignore[arg-type]
+    assert await model.describe(PNG, "image/png", "what") == "a green square"
+
+
 async def test_the_factory_passes_the_endpoint_through(monkeypatch: pytest.MonkeyPatch) -> None:
     """A typo in base_url or model_id would otherwise only surface live."""
     captured: dict[str, object] = {}
