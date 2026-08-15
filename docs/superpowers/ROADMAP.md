@@ -113,8 +113,18 @@ appears.
   first, or is it the wrong tool? RFC 0001 has never landed and is owed.
 - **PDF licensing**: pymupdf is AGPL; this library is MIT. If pymupdf is the
   best extractor, that is a licensing conflict, not a preference.
-- **Transcription**: local (faster-whisper) versus the existing
-  OpenAI-compatible model server at `http://192.168.1.14:8080/v1/`.
+- ~~**Transcription**: local versus the model server~~ — **SETTLED by testing.**
+  The server returns `501 {"message":"The current model does not support audio
+  input."}` on `/v1/audio/transcriptions`, and `/v1/models` lists no audio model.
+  Transcription must be local (`faster-whisper`, MIT, explicit local model
+  directory since this library downloads nothing implicitly).
+
+**Discovered while testing that:** `/v1/models` also lists **`nomic-embed-text`**
+— an embedding model, on hardware already running. Cycle 8's query layer needs
+embeddings for retrieval, and redstring's `EmbeddingProvider` is an injected
+Protocol with a LangChain adapter for any OpenAI-compatible server. The
+retrieval substrate's embedding half may already be available. Recorded here so
+Cycle 8 does not re-derive it.
 
 ## Standing constraints (every cycle)
 
