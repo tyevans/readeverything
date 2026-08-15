@@ -29,7 +29,7 @@ except ImportError as exc:  # pragma: no cover - exercised via a patched sys.mod
         "The composition root omits image handling when Pillow is absent, so "
         "reaching this means the handler was imported directly."
     ) from exc
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field
 
 from readeverything.domain.affordance import Affordance, DetailLevel
 from readeverything.domain.capability import Capability
@@ -47,6 +47,7 @@ from readeverything.domain.rendition import (
     Rendition,
     TextContent,
 )
+from readeverything.handlers.regions import RegionParams, crop_to_region, region_bbox
 from readeverything.ports.observation import Observer, emit
 from readeverything.ports.source import SourceReader
 from readeverything.ports.vision import VisionModel
@@ -75,27 +76,8 @@ class OcrParams(BaseModel):
     pass
 
 
-class CropParams(BaseModel):
-    x: float = Field(default=0.0, ge=0.0, le=1.0, description="Left edge, 0-1 of image width.")
-    y: float = Field(default=0.0, ge=0.0, le=1.0, description="Top edge, 0-1 of image height.")
-    w: float = Field(default=1.0, gt=0.0, le=1.0, description="Width, 0-1 of image width.")
-    h: float = Field(default=1.0, gt=0.0, le=1.0, description="Height, 0-1 of image height.")
-
-    @model_validator(mode="after")
-    def _stay_inside_the_frame(self) -> CropParams:
-        """A crop running off the edge is a parameter error, so reject it here.
-
-        `BBox` catches it too, but only once the crop is already running — the
-        caller then sees a bare `ValueError` from deep inside the domain rather
-        than a rejection at the boundary where their mistake was. The `BBox`
-        check stays as the backstop for every other path that builds one.
-        """
-        if self.x + self.w > 1.0 or self.y + self.h > 1.0:
-            raise ValueError(
-                f"crop must be within the unit square, got x={self.x} y={self.y} "
-                f"w={self.w} h={self.h}"
-            )
-        return self
+class CropParams(RegionParams):
+    """The whole-image crop affordance's params. Coordinates come from `RegionParams`."""
 
 
 class ImageHandler:
@@ -212,23 +194,9 @@ class ImageHandler:
                 if not isinstance(params, CropParams):
                     raise TypeError(f"expected CropParams, got {type(params).__name__}")
                 image = await self._require_image(ref)
-                box = (
-                    int(params.x * image.width),
-                    int(params.y * image.height),
-                    max(
-                        int((params.x + params.w) * image.width),
-                        int(params.x * image.width) + 1,
-                    ),
-                    max(
-                        int((params.y + params.h) * image.height),
-                        int(params.y * image.height) + 1,
-                    ),
-                )
-                buffer = io.BytesIO()
-                image.crop(box).save(buffer, format="PNG")
                 return Rendition(
-                    locator=BBox(page=None, x=params.x, y=params.y, w=params.w, h=params.h),
-                    content=ImageContent(data=buffer.getvalue(), mime="image/png"),
+                    locator=region_bbox(params),
+                    content=ImageContent(data=crop_to_region(image, params), mime="image/png"),
                 )
             case "describe_image":
                 if not isinstance(params, DescribeImageParams):
