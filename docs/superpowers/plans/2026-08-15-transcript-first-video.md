@@ -23,6 +23,65 @@
 
 ---
 
+---
+
+## What actually happened (recorded 2026-08-15, after execution)
+
+Stages 1 and 2 are complete. Stage 3 is **dropped**, on the evidence this plan
+asked for. Four things the plan did not anticipate:
+
+**1. The plan verified Stage 1 through the wrong door.** Task 7's integration
+test passes and always did — it tests `represent()`, which an agent cannot
+reach. An agent holds `inspect_path`, `list_paths` and `invoke_affordance`, and
+video's only affordances were `frame_at` and `describe_frame`. So the card
+truthfully announced "one readable caption track" and then offered nothing but
+pixels, and a real run went straight back to sampling frames at ~65s each. Fixed
+by building `read_transcript` — which perception-core specced long ago and
+nobody had built. **The same bug recurred one layer down**: `read_transcript`
+initially read captions only, so on a caption-less file it told an agent holding
+a working transcriber that there were no words. Both were found by running the
+measurement, not by the test suite.
+
+**2. Stage 3 is not worth building.** The gate was "if step 1 makes the agent
+fast and correct on its own, re-ask." Measured on the reference file: 4m54s and
+12 vision calls before, **1m28s and 1 vision call** after. One vision call means
+there is essentially no frame-selection problem left for a caption-guided
+sampler to solve. `domain/sampling.py` and `suggest_frames` are not built and
+should not be until a corpus exists that needs them.
+
+**3. Two defects surfaced that had nothing to do with captions**, both silent,
+both found only by running real files:
+
+- **A 0.20-confidence puremagic guess was treated as an authoritative
+  signature.** A 44-minute video detected as `audio/x-sndr` went to the audio
+  handler and lost every visual affordance without reporting anything. Fixed
+  with a confidence floor plus direct ISO BMFF `ftyp` recognition.
+- **A range past the end of a file exits ZERO**, and ffmpeg writes a valid,
+  frameless container. `FfmpegClip` now checks for a `moof` box rather than
+  trusting the exit code.
+
+**4. Caching needed a layer the plan never mentioned.** `Perception.invoke`
+caches renditions keyed on affordance params, so `read_transcript(0,120)` and
+`read_transcript(120,415)` each paid a full ~100s transcription of the same
+audio. `CachingTranscriber` and `CachingCaptionExtractor` cache the cues at the
+port instead. Measured across processes: 2m38s → 1m09s to clear the same step.
+
+**Final measurements**, four files, warm cache, after all of the above:
+
+| File | Duration | Words from | Identify | Vision calls |
+|---|---|---|---|---|
+| `mystery_subject.mp4` | 37m | captions | 0:36 | 0 |
+| `mystery_subject_2.mp4` | 7m | ASR | 2:31 | 3 |
+| `myster_subject_3.mp4` | 44m | ASR | 1:00 | 0 |
+| `mystery_subject_4.mp4` | 63m | ASR | 2:38 | 8 |
+
+Duration stopped predicting cost. What predicts it now is how many vision calls
+the agent chooses, which is its judgment about whether the words suffice — and
+on the 63-minute file those 8 calls are what found the closing copyright card
+that identified it.
+
+---
+
 ## Stage 1 — Captions
 
 ### Task 1: `StreamInfo` admits subtitle streams
@@ -1284,9 +1343,14 @@ git commit -m "watch_segment: bounded, because the cost curve says so"
 
 ---
 
-## Stage 3 — Where to look
+## Stage 3 — Where to look — **DROPPED, not built**
 
-> Gated on Task 7's measurement. If captions alone answer the question fast and correctly, re-ask whether this is worth building before starting.
+> The gate fired and the answer was no. Reading the captions took the reference
+> file from 12 vision calls to 1, and a sampler that chooses frames better
+> solves a problem that run did not have. Tasks 12 and 13 are left in place as a
+> record of what was considered, not as work to do. Revisit only given a corpus
+> where an agent burns many vision calls hunting for the right moment — which
+> none of the four files in `media/` does.
 
 ### Task 12: A pure sampler
 
