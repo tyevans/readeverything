@@ -99,7 +99,7 @@ async def test_a_different_model_does_not_share_an_entry() -> None:
     store = InMemoryArtifactStore()
     first = _CountingTranscriber()
     second = _CountingTranscriber()
-    second.model_id = "counting-asr@2"  # type: ignore[misc]
+    second.model_id = "counting-asr@2"
     await CachingTranscriber(inner=first, store=store).transcribe(b"same", "audio/wav")
     await CachingTranscriber(inner=second, store=store).transcribe(b"same", "audio/wav")
     assert first.calls == 1

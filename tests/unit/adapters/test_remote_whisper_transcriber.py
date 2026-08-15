@@ -80,17 +80,18 @@ async def test_confidence_is_never_populated_from_a_log_probability() -> None:
 
 
 async def test_it_posts_the_multipart_shape_the_server_documents() -> None:
-    seen: dict[str, object] = {}
+    seen: dict[str, str] = {}
+    sent: dict[str, bytes] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen["url"] = str(request.url)
-        seen["body"] = request.content
+        sent["body"] = request.content
         return httpx.Response(200, json=VERBOSE_JSON)
 
     await _transcriber(handler).transcribe(AUDIO, "audio/wav")
 
     assert seen["url"] == "http://whisper.invalid:8083/inference"
-    body = bytes(seen["body"])  # type: ignore[arg-type]
+    body = sent["body"]
     # verbose_json is the only format carrying per-segment start/end.
     assert b'name="response_format"\r\n\r\nverbose_json' in body
     assert b'name="temperature"\r\n\r\n0.0' in body

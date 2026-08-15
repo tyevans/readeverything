@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+
 from tests.fixtures_media import (
     audio_only,
     ffmpeg_available,

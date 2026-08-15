@@ -12,9 +12,9 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from tests.fixtures_media import ffmpeg_available, scene_cuts, video_only
 
 from readeverything.adapters.ffprobe_streams import FfprobeStreams
+from tests.fixtures_media import ffmpeg_available, scene_cuts, video_only
 
 pytestmark = pytest.mark.skipif(not ffmpeg_available(), reason="ffmpeg not available")
 

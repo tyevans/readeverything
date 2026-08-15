@@ -1,5 +1,4 @@
 import pytest
-from tests.fixtures_pdf import blank, born_digital, many_pages, mixed, scanned_like
 
 from readeverything.adapters.pdfium_probe import PdfiumProbe
 from readeverything.adapters.vision_recognizer import VisionTextRecognizer
@@ -19,6 +18,7 @@ from readeverything.ports.recognition import TextRecognizer
 from readeverything.registry.registry import MimeTypeRegistry
 from readeverything.testing.fakes import FakeSource, FakeVision, RaisingObserver, RecordingObserver
 from readeverything.testing.handler_compliance import MediaHandlerCompliance
+from tests.fixtures_pdf import blank, born_digital, many_pages, mixed, scanned_like
 
 COMPLIANCE_PDF = born_digital(["Alpha.", "Bravo."])
 
