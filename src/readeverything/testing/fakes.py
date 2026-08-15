@@ -12,6 +12,7 @@ from collections.abc import AsyncIterator, Mapping, Sequence
 
 from readeverything.domain.errors import InfrastructureError
 from readeverything.domain.locators import TimeSpan
+from readeverything.domain.observation import Event
 from readeverything.domain.rendition import SpeakerId, TranscriptCue
 
 
@@ -142,3 +143,20 @@ class FakeDiarizer:
             (TimeSpan(1.0, 2.0), SpeakerId("SPEAKER_01")),
             (TimeSpan(2.0, 3.0), SpeakerId("SPEAKER_00")),
         )
+
+
+class RecordingObserver:
+    """Keeps every event it is handed, in order, for assertion."""
+
+    def __init__(self) -> None:
+        self.events: list[Event] = []
+
+    def observe(self, event: Event) -> None:
+        self.events.append(event)
+
+
+class RaisingObserver:
+    """An observer that always fails, to prove `emit` contains it."""
+
+    def observe(self, event: Event) -> None:
+        raise RuntimeError("this observer always fails")
