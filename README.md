@@ -119,11 +119,18 @@ service.
 |---|---|---|---|
 | Text, JSON, XML | `text` | `read_range` | nothing extra |
 | Images | `image` | `crop_region` always; `describe_image` and `ocr` when a vision model is supplied | `images` extra (Pillow) for image handling; a vision model for description and OCR |
+| PDF | `binary` | `read_page`, `page_region`, `page_image`; `ocr_page` when a vision model is supplied | `documents` extra (pypdfium2); a vision model for `ocr_page` |
+| Audio | `audio` | `read_span`, when a transcriber is supplied | `transcription` extra (faster-whisper) and an `ffmpeg` binary |
+| Video | `video` | `frame_at`; `describe_frame` when a vision model is supplied | an `ffmpeg` binary; a vision model for `describe_frame` |
 | Everything else | `binary` | `hexdump` | nothing extra |
 
-There are no handlers yet for audio, video, PDF, office documents, or
-archives — files of those kinds fall through to the binary fallback above
-(a hex dump), not a dedicated representation.
+A PDF reports `card.kind == "binary"`, not a kind of its own. `MediaKind` names
+how bytes are *shaped*, and a PDF is a container; the fact that it has pages is
+carried by its affordances, which is where a caller acts on it anyway.
+
+Office documents and archives have no handlers yet — files of those kinds fall
+through to the binary fallback above (a hex dump), not a dedicated
+representation.
 
 ## Extras
 
