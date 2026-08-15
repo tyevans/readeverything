@@ -126,9 +126,19 @@ def build_tools(perception: Perception) -> list[BaseTool]:
     async def invoke_affordance(
         uri: str, affordance: str, params: Mapping[str, Any] | None = None
     ) -> str:
-        card = await perception.inspect(uri)
         rendition = await perception.invoke(uri, affordance, params or {})
-        return _render_rendition(rendition, tuple(a.name for a in card.affordances))
+        if isinstance(rendition.content, ImageContent):
+            # Only the ImageContent branch of `_render_rendition` needs the
+            # card, to say which affordances can read the image back as text.
+            # Fetching it unconditionally would pay `inspect`'s full
+            # decode/describe cost on every call, for a hint used nowhere
+            # else — and would fail invocations whose `describe` breaks even
+            # when `invoke` itself would have succeeded.
+            card = await perception.inspect(uri)
+            affordance_names = tuple(a.name for a in card.affordances)
+        else:
+            affordance_names = ()
+        return _render_rendition(rendition, affordance_names)
 
     async def _inspect(uri: str) -> str:
         return (await inspect_path(uri)).render()

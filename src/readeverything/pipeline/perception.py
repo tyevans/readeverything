@@ -12,6 +12,7 @@ every handler and let a malformed call reach adapter code.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -19,7 +20,7 @@ from readeverything.adapters.cache_key import artifact_key
 from readeverything.adapters.rendition_codec import decode_rendition, encode_rendition
 from readeverything.domain.affordance import Affordance
 from readeverything.domain.card import Card
-from readeverything.domain.errors import UnknownAffordanceError
+from readeverything.domain.errors import DomainError, UnknownAffordanceError
 from readeverything.domain.identity import SourceRef
 from readeverything.domain.rendition import Budget, Rendered, Rendition
 from readeverything.pipeline.resolution import ResolutionMemo, stat_key
@@ -122,7 +123,14 @@ class Perception:
         )
         cached = await self._artifacts.get(key)
         if cached is not None:
-            return decode_rendition(cached)
+            try:
+                return decode_rendition(cached)
+            except (DomainError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+                # An unreadable entry is a miss, not a failure. A persistent
+                # store survives version changes and nothing evicts it, so
+                # raising here would make one corrupt entry poison this
+                # derivation forever.
+                pass
         rendition = await handler.invoke(ref, name, validated)
         await self._artifacts.put(key, encode_rendition(rendition))
         return rendition

@@ -15,6 +15,7 @@ never a shell string — so there is no shell-injection surface here.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import shutil
 from collections.abc import Mapping
 
@@ -66,8 +67,12 @@ class BinaryProbe:
             stdout, _ = await asyncio.wait_for(process.communicate(), timeout=self._timeout_s)
         except TimeoutError:
             # A hung `--version` must not hang composition, which happens at
-            # startup. Kill it and reap it rather than leave a zombie.
-            process.kill()
+            # startup. Kill it and reap it rather than leave a zombie. The
+            # child may have exited in the gap between the timeout firing and
+            # this line, in which case `kill()` raises `ProcessLookupError` —
+            # a probe never raises, so that race is not an error here.
+            with contextlib.suppress(ProcessLookupError):
+                process.kill()
             await process.wait()
             return None
         except OSError:
