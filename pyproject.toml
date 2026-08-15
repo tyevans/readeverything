@@ -24,6 +24,7 @@ dependencies = [
 langchain = ["langchain-core>=0.3"]
 vision = ["langchain-openai>=0.2", "langchain-core>=0.3"]
 images = ["pillow>=11.0"]
+documents = ["pypdfium2>=5.13,<6"]
 testing = ["pytest>=8.3"]
 # Pinned below 0.8: deepagents' surface moves fast, and an unpinned dependency
 # on a fast-moving 0.x is how a library acquires breakage it did not choose.
@@ -39,6 +40,8 @@ dev = [
     "bandit>=1.8",
     "pip-audit>=2.7",
     "deepagents>=0.7,<0.8",
+    # Test fixtures only — nothing under src/ imports it.
+    "reportlab>=4.2",
 ]
 
 [build-system]

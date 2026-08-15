@@ -20,6 +20,9 @@ CONFINED: dict[str, set[str]] = {
     "puremagic": {"adapters/detection.py"},
     "charset_normalizer": {"handlers/text.py"},
     "PIL": {"handlers/image.py"},
+    # pypdfium2 wraps Google's PDFium; confined to the one adapter module so
+    # the pdfium import lives in exactly one place, per task-2's brief.
+    "pypdfium2": {"adapters/pdfium_probe.py"},
     "subprocess": set(),
     # asyncio's subprocess API is how binary_probe.py spawns external
     # executables; the other three files use asyncio only for async I/O, but
@@ -29,6 +32,7 @@ CONFINED: dict[str, set[str]] = {
         "adapters/hashing.py",
         "adapters/local_source.py",
         "adapters/binary_probe.py",
+        "adapters/pdfium_probe.py",
     },
     # shutil.which locates the executable a capability probe is about to run;
     # confined to the one adapter that probes binaries.
@@ -42,6 +46,13 @@ CONFINED: dict[str, set[str]] = {
 #: exactly one test file may import it, so a stray import elsewhere (which
 #: would make the whole suite depend on the extra) fails loudly here instead.
 DEEPAGENTS_CONFINED_TEST_FILE = "integration/test_deepagents_composition.py"
+
+#: `reportlab` generates PDF fixtures at test time so no binary is committed
+#: (see tests/fixtures_pdf.py). It is a dev-only dependency: nothing under
+#: `src/` may import it, and within `tests/` it is confined to the one module
+#: that builds fixtures, so every other test file imports the fixtures
+#: functions rather than reportlab itself.
+REPORTLAB_CONFINED_TEST_FILE = "fixtures_pdf.py"
 
 
 def _imported_roots(tree: ast.AST) -> set[str]:
@@ -73,6 +84,17 @@ def test_deepagents_is_confined_to_the_one_composition_test() -> None:
         ):
             violations.append(relative)
     assert not violations, f"deepagents imported outside its confined test: {violations}"
+
+
+def test_reportlab_is_confined_to_the_fixture_module() -> None:
+    violations: list[str] = []
+    for path in TESTS.rglob("*.py"):
+        relative = str(path.relative_to(TESTS))
+        if "reportlab" in _imported_roots(ast.parse(path.read_text())) and (
+            relative != REPORTLAB_CONFINED_TEST_FILE
+        ):
+            violations.append(relative)
+    assert not violations, f"reportlab imported outside its confined fixture module: {violations}"
 
 
 def test_the_confinement_table_is_live() -> None:
