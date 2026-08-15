@@ -433,6 +433,13 @@ class VideoHandler:
         measured rather than estimated: a caller watching a read is watching to
         find out whether it is progressing, and a start with no end is the hang
         this narration exists to make visible.
+
+        This never raises about its input — except `asyncio.CancelledError`
+        (or any other `BaseException` that is not an `Exception`), which
+        propagates. Cancellation is not a claim about the file; it is the
+        caller or the runtime asking the work to stop, and folding it into a
+        degraded moment would assert something about the video that nothing
+        established.
         """
         emit(self._observer, OperationStarted(operation=_OPERATION, ref=ref))
         started = time.perf_counter()
@@ -719,13 +726,29 @@ class VideoHandler:
 
         # `return_exceptions=True` as well as the guard inside `fetch`: gather
         # propagates the first exception it sees, and this handler must not
-        # begin raising from `represent` because it began gathering.
+        # begin raising from `represent` because it began gathering. The
+        # `except Exception:` above deliberately does not catch
+        # `CancelledError` — a cancelled fetch's own `CancelledError` must
+        # reach the results below undisguised, so the loop that follows can
+        # tell it apart from a decode failure and re-raise it instead of
+        # turning it into a degraded moment. See `_represent`.
         outcomes = await asyncio.gather(
             *(fetch(entries[index][0]) for index in sampled), return_exceptions=True
         )
         fetched: list[tuple[str, str] | None] = [None] * len(entries)
         for index, outcome in zip(sampled, outcomes, strict=True):
-            fetched[index] = _UNEXPECTED_MOMENT if isinstance(outcome, BaseException) else outcome
+            if isinstance(outcome, BaseException):
+                if not isinstance(outcome, Exception):
+                    # CancelledError (and any other BaseException that isn't an
+                    # Exception) is a request to stop, not a frame we failed to
+                    # read. `gather(return_exceptions=True)` hands back a
+                    # cancelled child's own CancelledError as a result instead
+                    # of propagating it, so a blanket BaseException-to-degraded
+                    # mapping would put a claim about the file into the
+                    # timeline that nothing established. Let it propagate.
+                    raise outcome
+                outcome = _UNEXPECTED_MOMENT
+            fetched[index] = outcome
         return fetched
 
     async def _moment(self, path: str, seconds: float) -> tuple[str, str]:

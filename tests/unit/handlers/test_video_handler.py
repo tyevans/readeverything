@@ -103,6 +103,18 @@ class _RaisingFrames:
         raise RuntimeError("ffmpeg exploded")
 
 
+class _CancellingFrames:
+    """A frame extractor whose fetch is cancelled from within, as a limiter or
+    a per-call timeout would cancel it — not an extractor that raises an
+    ordinary error."""
+
+    async def frame_at(self, path: str, seconds: float) -> bytes | None:
+        raise asyncio.CancelledError
+
+    async def scene_cuts(self, path: str, threshold: float = 0.4) -> tuple[float, ...]:
+        return ()
+
+
 class _NoFrames:
     async def frame_at(self, path: str, seconds: float) -> bytes | None:
         return None
@@ -488,6 +500,22 @@ async def test_an_extractor_that_raises_is_treated_as_no_frame() -> None:
         _facts(duration_s=5.0), vision=FakeVision(), frames=_RaisingFrames()
     ).represent(_ref(), Budget(max_chars=None))
     assert any("undecodable" in d.what for d in rendered.degradations)
+
+
+async def test_a_cancelled_fetch_propagates_rather_than_becoming_a_degraded_frame() -> None:
+    """Cancellation is a request to stop, not a frame we failed to read.
+
+    `gather(return_exceptions=True)` returns a child's own CancelledError as a
+    result rather than propagating it, and CancelledError is a BaseException —
+    so a blanket `isinstance(outcome, BaseException)` mapping would render a
+    cancelled fetch as a degraded moment, putting a claim about the file into
+    the timeline that nothing established.
+    """
+    rendered = _stub_handler(
+        _facts(duration_s=5.0), vision=FakeVision(), frames=_CancellingFrames()
+    ).represent(_ref(), Budget(max_chars=None))
+    with pytest.raises(asyncio.CancelledError):
+        await rendered
 
 
 async def test_a_model_that_answers_with_nothing_is_reported_not_indexed(
