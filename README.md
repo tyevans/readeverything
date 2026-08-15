@@ -25,6 +25,7 @@ tools = build_tools(perception)
 That's it — three lines. `build_perception` walks `root` and wires up
 detection, hashing, and the handler registry. `card` describes what the file
 is (`card.kind`, e.g. `"text"`) and what you can do with it (`card.affordances`,
+a tuple of `Affordance` objects — `[a.name for a in card.affordances]` gives
 e.g. `["read_range"]`). `build_tools` turns the whole perception surface into
 three LangChain-compatible tools an agent can call directly:
 `inspect_path`, `list_paths`, and `invoke_affordance`.
