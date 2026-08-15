@@ -20,7 +20,7 @@ import io
 from typing import ClassVar
 
 from PIL import Image, UnidentifiedImageError
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from readeverything.domain.affordance import Affordance, DetailLevel
 from readeverything.domain.capability import Capability
@@ -65,6 +65,22 @@ class CropParams(BaseModel):
     y: float = Field(default=0.0, ge=0.0, le=1.0, description="Top edge, 0-1 of image height.")
     w: float = Field(default=1.0, gt=0.0, le=1.0, description="Width, 0-1 of image width.")
     h: float = Field(default=1.0, gt=0.0, le=1.0, description="Height, 0-1 of image height.")
+
+    @model_validator(mode="after")
+    def _stay_inside_the_frame(self) -> CropParams:
+        """A crop running off the edge is a parameter error, so reject it here.
+
+        `BBox` catches it too, but only once the crop is already running — the
+        caller then sees a bare `ValueError` from deep inside the domain rather
+        than a rejection at the boundary where their mistake was. The `BBox`
+        check stays as the backstop for every other path that builds one.
+        """
+        if self.x + self.w > 1.0 or self.y + self.h > 1.0:
+            raise ValueError(
+                f"crop must be within the unit square, got x={self.x} y={self.y} "
+                f"w={self.w} h={self.h}"
+            )
+        return self
 
 
 class ImageHandler:
@@ -156,9 +172,9 @@ class ImageHandler:
             raise DomainError(f"{ref.uri} is not a readable image")
         return image
 
-    async def _see(self, ref: SourceRef, prompt: str) -> str:
+    async def _see(self, ref: SourceRef, prompt: str, affordance: str) -> str:
         if self._vision is None:
-            raise UnknownAffordanceError("describe_image", (a.name for a in self.affordances()))
+            raise UnknownAffordanceError(affordance, (a.name for a in self.affordances()))
         data = await self._source.read_bytes(ref.uri)
         text = await self._vision.describe(data, str(ref.mime), prompt)
         if not text.strip():
@@ -195,12 +211,12 @@ class ImageHandler:
             case "describe_image":
                 if not isinstance(params, DescribeImageParams):
                     raise TypeError(f"expected DescribeImageParams, got {type(params).__name__}")
-                text = await self._see(ref, params.prompt)
+                text = await self._see(ref, params.prompt, "describe_image")
                 return Rendition(locator=WHOLE_IMAGE, content=TextContent(text))
             case "ocr":
                 if not isinstance(params, OcrParams):
                     raise TypeError(f"expected OcrParams, got {type(params).__name__}")
-                text = await self._see(ref, _OCR_PROMPT)
+                text = await self._see(ref, _OCR_PROMPT, "ocr")
                 return Rendition(locator=WHOLE_IMAGE, content=TextContent(text))
             case _:
                 raise UnknownAffordanceError(name, (a.name for a in self.affordances()))
@@ -235,7 +251,7 @@ class ImageHandler:
             )
         else:
             try:
-                described = await self._see(ref, _DESCRIBE_PROMPT)
+                described = await self._see(ref, _DESCRIBE_PROMPT, "describe_image")
             except InfrastructureError as exc:
                 # An empty or failed completion is not a description. Saying so
                 # is better than indexing silence as an observation.

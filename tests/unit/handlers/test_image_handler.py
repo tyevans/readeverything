@@ -2,6 +2,7 @@ import io
 
 import pytest
 from PIL import Image
+from pydantic import ValidationError
 
 from readeverything.domain.capability import Capability
 from readeverything.domain.errors import UnknownAffordanceError
@@ -193,6 +194,39 @@ async def test_represent_degrades_when_the_model_returns_an_empty_string() -> No
     assert "8x4" in rendered.text
     assert rendered.degradations
     assert "vision" in rendered.degradations[0].what
+
+
+async def test_invoking_ocr_without_vision_names_ocr_and_not_describe_image() -> None:
+    """The name was hardcoded in `_see`, so `ocr` reported `describe_image` unknown.
+
+    Asserted on the attribute rather than the message: a caller needs the name
+    as data to react to it, not only as prose it would have to parse.
+    """
+    with pytest.raises(UnknownAffordanceError) as caught:
+        await _handler().invoke(_ref(), "ocr", OcrParams())
+    assert caught.value.affordance == "ocr"
+
+
+async def test_a_crop_may_not_run_off_the_right_edge_of_the_image() -> None:
+    """Rejected at parameter parsing, where a parameter error belongs.
+
+    `x + w > 1` used to construct fine and then surface a bare `ValueError`
+    from `BBox.__post_init__` — not a `DomainError` — from deep inside the
+    domain, long after the caller's mistake.
+    """
+    with pytest.raises(ValidationError):
+        CropParams(x=0.5, w=0.8)
+
+
+async def test_a_crop_may_not_run_off_the_bottom_edge_of_the_image() -> None:
+    with pytest.raises(ValidationError):
+        CropParams(y=0.5, h=0.8)
+
+
+def test_the_whole_image_defaults_and_in_bounds_crops_still_construct() -> None:
+    """`test_declared_affordances_are_invocable` requires no-argument params."""
+    assert CropParams().w == 1.0
+    assert CropParams(x=0.25, y=0.25, w=0.5, h=0.5).w == 0.5
 
 
 async def test_an_undecodable_image_degrades_as_undecodable_not_as_missing_vision() -> None:
