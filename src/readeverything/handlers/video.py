@@ -271,8 +271,14 @@ class VideoHandler:
         }
         if video is not None:
             card_facts["video_codec"] = video.codec
-            card_facts["width"] = video.width if video.width is not None else 0
-            card_facts["height"] = video.height if video.height is not None else 0
+            # Omitted rather than zeroed when the probe could not report them.
+            # A width of 0 is a measurement, and claiming one nothing made is the
+            # defect this project keeps finding; an absent key admits ignorance,
+            # which is what `frame_rate` and `sample_rate` already do.
+            if video.width is not None:
+                card_facts["width"] = video.width
+            if video.height is not None:
+                card_facts["height"] = video.height
             if video.frame_rate is not None:
                 card_facts["frame_rate"] = video.frame_rate
         if audio is not None:
