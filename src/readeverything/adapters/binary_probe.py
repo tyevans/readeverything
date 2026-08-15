@@ -21,16 +21,37 @@ from collections.abc import Mapping
 
 from readeverything.domain.capability import Capability
 
-#: The executable each capability is provided by, and the flag that makes it
-#: print a version and exit. Both are fixed here rather than caller-supplied:
-#: this module runs subprocesses, and the argument vector must never contain
-#: anything a caller can influence.
-DEFAULT_EXECUTABLES: Mapping[Capability, str] = {
-    Capability.FFMPEG: "ffmpeg",
-    Capability.EXIFTOOL: "exiftool",
-    Capability.LIBREOFFICE: "libreoffice",
-    Capability.TESSERACT: "tesseract",
+#: The executable each capability is provided by, and the flag that makes THAT
+#: executable print a version and exit. The flag belongs to the executable, not
+#: to the probe: a single global `-version` reported exiftool absent while it
+#: was installed, because exiftool's flag is `-ver`.
+DEFAULT_EXECUTABLES: Mapping[Capability, tuple[str, str]] = {
+    Capability.FFMPEG: ("ffmpeg", "-version"),
+    Capability.EXIFTOOL: ("exiftool", "-ver"),
+    Capability.LIBREOFFICE: ("libreoffice", "--version"),
+    Capability.TESSERACT: ("tesseract", "--version"),
 }
+
+#: Prefixes that mean the tool talked to us rather than identified itself.
+_NOT_A_VERSION = ("warning", "error", "usage")
+
+
+def _as_revision(stdout: bytes) -> str | None:
+    """The first line, if it plausibly identifies the tool.
+
+    `libreoffice -version` prints "Warning: -version is deprecated…", and the
+    probe recorded that as the revision. It then entered the capability
+    fingerprint and therefore every artifact cache key. Nothing had established
+    that the captured line was a version — this is the probe's own contract
+    turned on itself, so it now checks.
+    """
+    lines = stdout.decode("utf-8", errors="replace").strip().splitlines()
+    if not lines:
+        return None
+    first = lines[0].strip()
+    if not first or first.lower().startswith(_NOT_A_VERSION):
+        return None
+    return first
 
 
 class BinaryProbe:
@@ -39,25 +60,24 @@ class BinaryProbe:
     def __init__(
         self,
         *,
-        executables: Mapping[Capability, str] | None = None,
-        version_flag: str = "-version",
+        executables: Mapping[Capability, tuple[str, str]] | None = None,
         timeout_s: float = 5.0,
     ) -> None:
         self._executables = dict(DEFAULT_EXECUTABLES if executables is None else executables)
-        self._version_flag = version_flag
         self._timeout_s = timeout_s
 
     async def revision(self, capability: Capability) -> str | None:
-        name = self._executables.get(capability)
-        if name is None:
+        entry = self._executables.get(capability)
+        if entry is None:
             return None
+        name, version_flag = entry
         located = shutil.which(name)
         if located is None:
             return None
         try:
             process = await asyncio.create_subprocess_exec(
                 located,
-                self._version_flag,
+                version_flag,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
             )
@@ -79,5 +99,4 @@ class BinaryProbe:
             return None
         if process.returncode != 0:
             return None
-        lines = stdout.decode("utf-8", errors="replace").strip().splitlines()
-        return lines[0].strip() if lines else None
+        return _as_revision(stdout)
