@@ -1,12 +1,16 @@
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
+from pydantic import BaseModel
 
 from readeverything.adapters.artifact_store import InMemoryArtifactStore
 from readeverything.adapters.detection import PuremagicDetector
 from readeverything.adapters.hashing import ContentHasher
 from readeverything.adapters.local_source import LocalFileSource
-from readeverything.domain.capability import CapabilitySet
+from readeverything.domain.affordance import Affordance, DetailLevel
+from readeverything.domain.capability import Capability, CapabilitySet
+from readeverything.domain.errors import UnknownAffordanceError
 from readeverything.domain.identity import MediaKind
 from readeverything.domain.rendition import Budget, TextContent
 from readeverything.handlers.binary import BinaryHandler
@@ -61,9 +65,10 @@ async def test_invoke_validates_params_against_the_declared_schema(
         await perception.invoke("notes.txt", "read_range", {"start": -5, "end": 1})
 
 
-async def test_invoke_refuses_an_unavailable_affordance(perception: Perception) -> None:
-    from readeverything.domain.errors import UnknownAffordanceError
-
+async def test_invoke_refuses_an_affordance_the_resolved_handler_does_not_declare(
+    perception: Perception,
+) -> None:
+    """hexdump belongs to BinaryHandler; a text file never reaches it."""
     with pytest.raises(UnknownAffordanceError):
         await perception.invoke("notes.txt", "hexdump", {})
 
@@ -75,3 +80,60 @@ async def test_represent_returns_a_covering_map(perception: Perception) -> None:
 
 async def test_list_walks_the_tree(perception: Perception) -> None:
     assert sorted(await perception.list(".")) == ["blob.bin", "notes.txt"]
+
+
+class _GatedParams(BaseModel):
+    pass
+
+
+class _GatedHandler(TextHandler):
+    """A text handler with one extra affordance that requires VISION."""
+
+    handler_id: ClassVar[str] = "gated"
+
+    def affordances(self) -> tuple[Affordance, ...]:
+        return (
+            *super().affordances(),
+            Affordance(
+                name="describe_layout",
+                description="Describe the visual layout of the text.",
+                params=_GatedParams,
+                requires=frozenset({Capability.VISION}),
+                level=DetailLevel.DEEP,
+            ),
+        )
+
+
+def _perception_with(capabilities: CapabilitySet, tmp_path: Path) -> Perception:
+    (tmp_path / "notes.txt").write_bytes(b"alpha\nbeta\n")
+    source = LocalFileSource(root=tmp_path)
+    return Perception(
+        source=source,
+        detector=PuremagicDetector(),
+        hasher=ContentHasher(source=source),
+        registry=MimeTypeRegistry(
+            handlers=(_GatedHandler(source=source), BinaryHandler(source=source)),
+            capabilities=capabilities,
+        ),
+        artifacts=InMemoryArtifactStore(),
+    )
+
+
+async def test_a_capability_gated_affordance_is_hidden_without_the_capability(
+    tmp_path: Path,
+) -> None:
+    """The agent never sees a tool this deployment cannot serve."""
+    perception = _perception_with(CapabilitySet.empty(), tmp_path)
+    card = await perception.inspect("notes.txt")
+    assert "describe_layout" not in card.affordance_names()
+    with pytest.raises(UnknownAffordanceError):
+        await perception.invoke("notes.txt", "describe_layout", {})
+
+
+async def test_a_capability_gated_affordance_appears_when_the_capability_is_present(
+    tmp_path: Path,
+) -> None:
+    """...and does see it when the deployment can serve it."""
+    perception = _perception_with(CapabilitySet.of({Capability.VISION: "fake-vision@1"}), tmp_path)
+    card = await perception.inspect("notes.txt")
+    assert "describe_layout" in card.affordance_names()
