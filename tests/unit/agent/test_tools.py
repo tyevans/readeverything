@@ -1,6 +1,6 @@
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -170,9 +170,9 @@ async def test_a_wrongly_typed_argument_returns_an_error_string(
 
 
 @pytest.mark.asyncio
-async def test_ask_about_image_forwards_question_and_where_together():
+async def test_ask_about_image_forwards_question_and_where_together() -> None:
     perception = RecordingPerception()
-    tool = _by_name(build_tools(perception), "ask_about_image")
+    tool = _by_name(build_tools(cast(Perception, perception)), "ask_about_image")
     await tool.ainvoke({"uri": "a.png", "question": "How many?", "where": {"x": 0.5, "w": 0.5}})
     assert perception.invoked == (
         "a.png",
@@ -182,32 +182,33 @@ async def test_ask_about_image_forwards_question_and_where_together():
 
 
 @pytest.mark.asyncio
-async def test_ask_about_image_needs_no_where():
+async def test_ask_about_image_needs_no_where() -> None:
     perception = RecordingPerception()
-    tool = _by_name(build_tools(perception), "ask_about_image")
+    tool = _by_name(build_tools(cast(Perception, perception)), "ask_about_image")
     await tool.ainvoke({"uri": "a.png", "question": "What is this?"})
+    assert perception.invoked is not None
     assert perception.invoked[2] == {"question": "What is this?"}
 
 
 @pytest.mark.asyncio
-async def test_ask_about_image_never_inspects_the_file():
+async def test_ask_about_image_never_inspects_the_file() -> None:
     """The tool layer knows nothing about kinds — an inspect call here would
     mean it had started making decisions it must not make."""
     perception = RecordingPerception()
-    tool = _by_name(build_tools(perception), "ask_about_image")
+    tool = _by_name(build_tools(cast(Perception, perception)), "ask_about_image")
     await tool.ainvoke({"uri": "a.png", "question": "q"})
     assert perception.inspected == []
 
 
 @pytest.mark.asyncio
-async def test_a_file_without_the_affordance_lists_what_it_does_have():
+async def test_a_file_without_the_affordance_lists_what_it_does_have() -> None:
     perception = RaisingPerception(UnknownAffordanceError("ask_about_image", ["read_range"]))
-    tool = _by_name(build_tools(perception), "ask_about_image")
+    tool = _by_name(build_tools(cast(Perception, perception)), "ask_about_image")
     result = await tool.ainvoke({"uri": "a.txt", "question": "q"})
     assert "read_range" in result
 
 
-def test_the_tool_list_is_the_same_length_for_every_file():
+def test_the_tool_list_is_the_same_length_for_every_file() -> None:
     """The docstring's rule: the tool list never varies with what was last
     looked at. Four tools, always."""
-    assert len(build_tools(RecordingPerception())) == 4
+    assert len(build_tools(cast(Perception, RecordingPerception()))) == 4

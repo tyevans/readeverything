@@ -346,6 +346,7 @@ async def test_ask_about_image_puts_the_question_to_the_model() -> None:
     rendition = await handler.invoke(
         _ref(), "ask_about_image", AskAboutImageParams(question="How many cats?")
     )
+    assert isinstance(rendition.content, TextContent)
     assert "How many cats?" in rendition.content.text
     assert vision.calls == 1
 
@@ -361,6 +362,8 @@ async def test_a_region_sends_the_model_different_bytes_than_the_whole_image() -
         "ask_about_image",
         AskAboutImageParams(question="q", x=0.0, y=0.0, w=0.25, h=0.25),
     )
+    assert isinstance(whole.content, TextContent)
+    assert isinstance(part.content, TextContent)
     assert whole.content.text != part.content.text
 
 
@@ -371,6 +374,7 @@ async def test_a_region_is_the_locator() -> None:
         "ask_about_image",
         AskAboutImageParams(question="q", x=0.1, y=0.2, w=0.3, h=0.4),
     )
+    assert isinstance(rendition.locator, BBox)
     assert (rendition.locator.x, rendition.locator.y) == (0.1, 0.2)
 
 
@@ -382,7 +386,7 @@ async def test_an_empty_completion_is_not_an_answer() -> None:
 
 def test_a_question_is_required() -> None:
     with pytest.raises(ValidationError):
-        AskAboutImageParams()
+        AskAboutImageParams.model_validate({})
 
 
 def test_a_missing_pillow_names_the_extra_not_the_package(

@@ -380,13 +380,13 @@ def pdf_ref() -> SourceRef:
 
 
 @pytest.mark.asyncio
-async def test_ask_about_image_is_absent_without_a_vision_model(pdf_bytes):
+async def test_ask_about_image_is_absent_without_a_vision_model(pdf_bytes: bytes) -> None:
     handler = PdfHandler(source=FakeSource({"a.pdf": pdf_bytes}), probe=PdfiumProbe())
     assert "ask_about_image" not in {a.name for a in handler.affordances()}
 
 
 @pytest.mark.asyncio
-async def test_ask_about_image_reaches_the_model(pdf_bytes, pdf_ref):
+async def test_ask_about_image_reaches_the_model(pdf_bytes: bytes, pdf_ref: SourceRef) -> None:
     vision = FakeVision()
     handler = PdfHandler(
         source=FakeSource({"a.pdf": pdf_bytes}), probe=PdfiumProbe(), vision=vision
@@ -394,12 +394,13 @@ async def test_ask_about_image_reaches_the_model(pdf_bytes, pdf_ref):
     rendition = await handler.invoke(
         pdf_ref, "ask_about_image", AskAboutPageParams(question="What chart is this?", page=1)
     )
+    assert isinstance(rendition.content, TextContent)
     assert "What chart is this?" in rendition.content.text
     assert vision.calls == 1
 
 
 @pytest.mark.asyncio
-async def test_the_locator_carries_the_page(pdf_bytes, pdf_ref):
+async def test_the_locator_carries_the_page(pdf_bytes: bytes, pdf_ref: SourceRef) -> None:
     handler = PdfHandler(
         source=FakeSource({"a.pdf": pdf_bytes}), probe=PdfiumProbe(), vision=FakeVision()
     )
@@ -408,12 +409,15 @@ async def test_the_locator_carries_the_page(pdf_bytes, pdf_ref):
         "ask_about_image",
         AskAboutPageParams(question="q", page=1, x=0.0, y=0.5, w=1.0, h=0.5),
     )
+    assert isinstance(rendition.locator, BBox)
     assert rendition.locator.page == 1
     assert rendition.locator.y == 0.5
 
 
 @pytest.mark.asyncio
-async def test_a_missing_page_degrades_rather_than_raising(pdf_bytes, pdf_ref):
+async def test_a_missing_page_degrades_rather_than_raising(
+    pdf_bytes: bytes, pdf_ref: SourceRef
+) -> None:
     handler = PdfHandler(
         source=FakeSource({"a.pdf": pdf_bytes}), probe=PdfiumProbe(), vision=FakeVision()
     )
@@ -424,7 +428,9 @@ async def test_a_missing_page_degrades_rather_than_raising(pdf_bytes, pdf_ref):
 
 
 @pytest.mark.asyncio
-async def test_ocr_page_works_with_recognizer_but_no_vision(pdf_bytes, pdf_ref):
+async def test_ocr_page_works_with_recognizer_but_no_vision(
+    pdf_bytes: bytes, pdf_ref: SourceRef
+) -> None:
     """`recognizer` and `vision` are independent dependencies; neither implies the other."""
     handler = PdfHandler(
         source=FakeSource({"a.pdf": pdf_bytes}),
@@ -436,7 +442,9 @@ async def test_ocr_page_works_with_recognizer_but_no_vision(pdf_bytes, pdf_ref):
 
 
 @pytest.mark.asyncio
-async def test_ask_about_image_works_with_vision_but_no_recognizer(pdf_bytes, pdf_ref):
+async def test_ask_about_image_works_with_vision_but_no_recognizer(
+    pdf_bytes: bytes, pdf_ref: SourceRef
+) -> None:
     handler = PdfHandler(
         source=FakeSource({"a.pdf": pdf_bytes}),
         probe=PdfiumProbe(),
