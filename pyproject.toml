@@ -1,15 +1,18 @@
 [project]
-name = "deepagents-read-everything"
+name = "readeverything"
 version = "0.1.0"
 description = "Give an agent eyes into a filesystem: mimetype-dispatched media representations with locator-carrying provenance."
 readme = "README.md"
 license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "Ty Evans", email = "tyler@poorlythoughtout.com" }]
 requires-python = ">=3.13"
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
+    # No `License :: OSI Approved ::` classifier: with a PEP 639 SPDX
+    # `license` expression above, the two are mutually exclusive and PyPI
+    # rejects an upload that carries both.
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3 :: Only",
     "Typing :: Typed",
@@ -19,6 +22,12 @@ dependencies = [
     "puremagic>=1.28",
     "charset-normalizer>=3.4",
 ]
+
+[project.urls]
+Homepage = "https://github.com/tyevans/readeverything"
+Repository = "https://github.com/tyevans/readeverything"
+Changelog = "https://github.com/tyevans/readeverything/blob/main/CHANGELOG.md"
+Issues = "https://github.com/tyevans/readeverything/issues"
 
 [project.optional-dependencies]
 langchain = ["langchain-core>=0.3"]
@@ -43,6 +52,7 @@ dev = [
     "import-linter>=2.1",
     "bandit>=1.8",
     "pip-audit>=2.7",
+    "pre-commit>=4.0",
     "deepagents>=0.7,<0.8",
     # Test fixtures only — nothing under src/ imports it.
     "reportlab>=4.2",
@@ -144,3 +154,9 @@ exclude_dirs = ["tests", ".venv", "build", "dist"]
 # vulnerability there would go unseen. This silences one rule, in one place.
 [tool.bandit.assert_used]
 skips = ["*/readeverything/testing/*.py"]
+
+[tool.ruff.lint.isort]
+# `tests` is a package on the path (it has an `__init__.py`, so helpers like
+# `tests.assertions` are importable). Without this it sorts into the
+# third-party block next to pytest, which reads as a dependency.
+known-first-party = ["readeverything", "tests"]
