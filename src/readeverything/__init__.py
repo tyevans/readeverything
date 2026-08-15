@@ -24,9 +24,16 @@ if TYPE_CHECKING:
     from readeverything.adapters.caching_words import (
         CachingTranscriber as CachingTranscriber,
     )
+    from readeverything.adapters.clip_langchain import (
+        LangChainClipModel as LangChainClipModel,
+    )
+    from readeverything.adapters.clip_langchain import (
+        build_openai_clip_model as build_openai_clip_model,
+    )
     from readeverything.adapters.detection import PuremagicDetector as PuremagicDetector
     from readeverything.adapters.ffmpeg_audio import FfmpegAudio as FfmpegAudio
     from readeverything.adapters.ffmpeg_captions import FfmpegCaptions as FfmpegCaptions
+    from readeverything.adapters.ffmpeg_clip import FfmpegClip as FfmpegClip
     from readeverything.adapters.hashing import ContentHasher as ContentHasher
     from readeverything.adapters.hashing import StatMemo as StatMemo
     from readeverything.adapters.local_source import LocalFileSource as LocalFileSource
@@ -99,6 +106,8 @@ if TYPE_CHECKING:
     from readeverything.ports.artifacts import ArtifactStore as ArtifactStore
     from readeverything.ports.audio import AudioExtractor as AudioExtractor
     from readeverything.ports.captions import CaptionExtractor as CaptionExtractor
+    from readeverything.ports.clip_source import ClipExtractor as ClipExtractor
+    from readeverything.ports.clips import ClipModel as ClipModel
     from readeverything.ports.detection import MimeDetector as MimeDetector
     from readeverything.ports.handler import MediaHandler as MediaHandler
     from readeverything.ports.hashing import ContentHashing as ContentHashing
@@ -163,6 +172,11 @@ _LAZY: dict[str, str] = {
     "CachingCaptionExtractor": "readeverything.adapters.caching_words",
     "CachingTranscriber": "readeverything.adapters.caching_words",
     "CaptionExtractor": "readeverything.ports.captions",
+    "ClipExtractor": "readeverything.ports.clip_source",
+    "ClipModel": "readeverything.ports.clips",
+    "FfmpegClip": "readeverything.adapters.ffmpeg_clip",
+    "LangChainClipModel": "readeverything.adapters.clip_langchain",
+    "build_openai_clip_model": "readeverything.adapters.clip_langchain",
     "CueSource": "readeverything.domain.rendition",
     "FfmpegAudio": "readeverything.adapters.ffmpeg_audio",
     "FfmpegCaptions": "readeverything.adapters.ffmpeg_captions",

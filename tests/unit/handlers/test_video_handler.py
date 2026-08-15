@@ -13,7 +13,7 @@ from readeverything.adapters.ffmpeg_frames import FfmpegFrames
 from readeverything.adapters.ffprobe_streams import FfprobeStreams
 from readeverything.adapters.semaphore_limiter import SemaphoreLimiter
 from readeverything.domain.capability import Capability
-from readeverything.domain.errors import UnknownAffordanceError
+from readeverything.domain.errors import InfrastructureError, UnknownAffordanceError
 from readeverything.domain.identity import ContentHash, MediaKind, MimeType, SourceRef
 from readeverything.domain.locators import ByteRange, TimeSpan
 from readeverything.domain.observation import OperationProgressed
@@ -33,12 +33,14 @@ from readeverything.handlers.video import (
     DescribeFrameParams,
     FrameAtParams,
     VideoHandler,
+    WatchSegmentParams,
     _spoken,
 )
 from readeverything.ports.frames import FrameExtractor
 from readeverything.ports.streams import MediaFacts, StreamInfo, StreamProbe
 from readeverything.testing.fakes import (
     FakeCaptions,
+    FakeClipModel,
     FakeTranscriber,
     FakeVision,
     RaisingCaptions,
@@ -254,6 +256,9 @@ def _handler(
     audio: object | None = None,
     transcriber: object | None = None,
     captions: object | None = None,
+    clips: object | None = None,
+    watcher: object | None = None,
+    max_clip_s: float = 30.0,
     observer: object | None = None,
     limiter: object | None = None,
     facts: MediaFacts | None = None,
@@ -274,6 +279,9 @@ def _handler(
         audio=audio,  # type: ignore[arg-type]  # structural stub in tests
         transcriber=transcriber,  # type: ignore[arg-type]  # structural stub in tests
         captions=captions,  # type: ignore[arg-type]  # structural stub in tests
+        clips=clips,  # type: ignore[arg-type]  # structural stub in tests
+        watcher=watcher,  # type: ignore[arg-type]  # structural stub in tests
+        max_clip_s=max_clip_s,
         sample_interval_s=interval,
         observer=observer,  # type: ignore[arg-type]  # structural stub in tests
         limiter=limiter,  # type: ignore[arg-type]  # structural stub in tests
@@ -1342,3 +1350,160 @@ async def test_no_caption_complaint_when_the_file_has_none(sample_video: str) ->
         _ref(), Budget(max_chars=None)
     )
     assert not any("caption" in d.what for d in rendered.degradations)
+
+
+# --- watch_segment ------------------------------------------------------------
+
+
+class _StubClips:
+    """A clip extractor that hands back bytes and records what was asked."""
+
+    def __init__(self, data: bytes | None = b"\x00\x00\x00\x18ftypmp42moof") -> None:
+        self._data = data
+        self.calls: list[tuple[float, float]] = []
+
+    async def clip(self, path: str, start_s: float, end_s: float) -> bytes | None:
+        self.calls.append((start_s, end_s))
+        return self._data
+
+
+class _RaisingClips:
+    async def clip(self, path: str, start_s: float, end_s: float) -> bytes | None:
+        raise RuntimeError("ffmpeg exploded")
+
+
+class _RaisingWatcher:
+    model_id = "raising-clip@1"
+
+    async def watch(self, clip: bytes, mime: str, prompt: str) -> str:
+        raise InfrastructureError("the model returned an empty completion")
+
+
+async def test_watch_segment_describes_a_range_as_one_span(sample_video: str) -> None:
+    """One LocatorSegment over the whole span, never one per second: this is a
+    joint description of a stretch of time, and splitting it would invent
+    precision the model never had."""
+    handler = _handler(
+        sample_video, vision=FakeVision(), clips=_StubClips(), watcher=FakeClipModel()
+    )
+    result = await handler.invoke(
+        _ref(), "watch_segment", WatchSegmentParams(start_s=1.0, end_s=3.0, prompt="what?")
+    )
+    assert result.degraded is False
+    assert result.locator == TimeSpan(1.0, 3.0)
+    assert "clip of" in result.content.text
+
+
+async def test_the_locator_is_the_range_requested(sample_video: str) -> None:
+    """`-ss` seeks by keyframe, so ffmpeg may hand back a clip starting
+    slightly early. The request is a fact about the question asked; the
+    delivered range is an approximation that would take another probe to
+    learn, and reporting it as measured is the defect this project keeps
+    finding."""
+    clips = _StubClips()
+    handler = _handler(sample_video, vision=FakeVision(), clips=clips, watcher=FakeClipModel())
+    result = await handler.invoke(
+        _ref(), "watch_segment", WatchSegmentParams(start_s=2.5, end_s=4.5)
+    )
+    assert result.locator == TimeSpan(2.5, 4.5)
+    assert clips.calls == [(2.5, 4.5)]
+
+
+async def test_a_segment_over_the_cap_is_refused_with_its_cost(sample_video: str) -> None:
+    """Refused, not truncated. Cost is ~2,180 tokens per second and cannot be
+    reduced client-side, so a ten-minute request is 1.3M tokens. Quietly
+    watching the first 30 seconds and reporting success would be a claim about
+    time the model never saw, and the caller could not tell."""
+    watcher = FakeClipModel()
+    clips = _StubClips()
+    handler = _handler(sample_video, vision=FakeVision(), clips=clips, watcher=watcher)
+    result = await handler.invoke(
+        _ref(), "watch_segment", WatchSegmentParams(start_s=0.0, end_s=600.0)
+    )
+    assert result.degraded is True
+    assert "30" in result.content.text
+    assert "1,308,000" in result.content.text
+    assert watcher.calls == 0, "the model was called despite the cap"
+    assert clips.calls == [], "a clip was cut despite the cap"
+
+
+async def test_the_cap_is_a_constructor_argument(sample_video: str) -> None:
+    handler = _handler(
+        sample_video,
+        vision=FakeVision(),
+        clips=_StubClips(),
+        watcher=FakeClipModel(),
+        max_clip_s=5.0,
+    )
+    result = await handler.invoke(
+        _ref(), "watch_segment", WatchSegmentParams(start_s=0.0, end_s=10.0)
+    )
+    assert result.degraded is True
+    assert "5s" in result.content.text
+
+
+async def test_a_backwards_segment_is_refused(sample_video: str) -> None:
+    handler = _handler(
+        sample_video, vision=FakeVision(), clips=_StubClips(), watcher=FakeClipModel()
+    )
+    result = await handler.invoke(
+        _ref(), "watch_segment", WatchSegmentParams(start_s=5.0, end_s=2.0)
+    )
+    assert result.degraded is True
+    assert "must end after it starts" in result.content.text
+
+
+async def test_a_range_with_no_video_degrades(sample_video: str) -> None:
+    handler = _handler(
+        sample_video, vision=FakeVision(), clips=_StubClips(data=None), watcher=FakeClipModel()
+    )
+    result = await handler.invoke(
+        _ref(), "watch_segment", WatchSegmentParams(start_s=0.0, end_s=2.0)
+    )
+    assert result.degraded is True
+    assert "past the end" in result.content.text
+
+
+async def test_a_raising_extractor_degrades_rather_than_failing(sample_video: str) -> None:
+    handler = _handler(
+        sample_video, vision=FakeVision(), clips=_RaisingClips(), watcher=FakeClipModel()
+    )
+    result = await handler.invoke(
+        _ref(), "watch_segment", WatchSegmentParams(start_s=0.0, end_s=2.0)
+    )
+    assert result.degraded is True
+    assert "could not be cut" in result.content.text
+
+
+async def test_a_refusing_model_degrades_rather_than_failing(sample_video: str) -> None:
+    handler = _handler(
+        sample_video, vision=FakeVision(), clips=_StubClips(), watcher=_RaisingWatcher()
+    )
+    result = await handler.invoke(
+        _ref(), "watch_segment", WatchSegmentParams(start_s=0.0, end_s=2.0)
+    )
+    assert result.degraded is True
+    assert "could not watch" in result.content.text
+
+
+async def test_watch_segment_is_absent_without_both_ports(sample_video: str) -> None:
+    """A server that describes stills need not accept clips — ours did not
+    until 2026-08-15 — so the affordance must disappear rather than fail."""
+    names = lambda h: {a.name for a in h.affordances()}  # noqa: E731
+    assert "watch_segment" not in names(_handler(sample_video, vision=FakeVision()))
+    assert "watch_segment" not in names(
+        _handler(sample_video, vision=FakeVision(), clips=_StubClips())
+    )
+    assert "watch_segment" not in names(
+        _handler(sample_video, vision=FakeVision(), watcher=FakeClipModel())
+    )
+    assert "watch_segment" in names(
+        _handler(sample_video, vision=FakeVision(), clips=_StubClips(), watcher=FakeClipModel())
+    )
+
+
+async def test_invoking_an_unoffered_watch_segment_raises(sample_video: str) -> None:
+    with pytest.raises(UnknownAffordanceError):
+        await _handler(sample_video, vision=FakeVision()).invoke(
+            _ref(), "watch_segment", WatchSegmentParams()
+        )

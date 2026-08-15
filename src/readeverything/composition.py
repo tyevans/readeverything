@@ -29,6 +29,7 @@ from readeverything.pipeline.perception import Perception
 from readeverything.pipeline.resolution import ResolutionMemo
 from readeverything.ports.artifacts import ArtifactStore
 from readeverything.ports.captions import CaptionExtractor
+from readeverything.ports.clips import ClipModel
 from readeverything.ports.handler import MediaHandler
 from readeverything.ports.limits import Limiter
 from readeverything.ports.observation import Observer
@@ -106,6 +107,7 @@ def _video_handler(
     vision: VisionModel | None,
     transcriber: Transcriber | None,
     captions: CaptionExtractor | None,
+    watcher: ClipModel | None,
     observer: Observer | None,
     limiter: Limiter | None,
 ) -> list[MediaHandler]:
@@ -120,6 +122,7 @@ def _video_handler(
     """
     from readeverything.adapters.ffmpeg_audio import FfmpegAudio
     from readeverything.adapters.ffmpeg_captions import FfmpegCaptions
+    from readeverything.adapters.ffmpeg_clip import FfmpegClip
     from readeverything.adapters.ffmpeg_frames import FfmpegFrames
     from readeverything.adapters.ffprobe_streams import FfprobeStreams
     from readeverything.handlers.video import VideoHandler
@@ -146,6 +149,14 @@ def _video_handler(
             audio=FfmpegAudio(),
             transcriber=transcriber,
             captions=FfmpegCaptions() if captions is None else captions,
+            # The extractor is wired unconditionally and the WATCHER is not,
+            # matching how vision is treated: cutting a clip costs an ffmpeg
+            # call a caller already pays for elsewhere, while watching one
+            # needs an endpoint that accepts video — which ours did not until
+            # 2026-08-15. Without a watcher the affordance simply does not
+            # appear, which is negotiation rather than degradation.
+            clips=FfmpegClip(),
+            watcher=watcher,
             observer=observer,
             limiter=limiter,
         )
@@ -188,6 +199,7 @@ async def build_perception(
     vision: VisionModel | None = None,
     transcriber: Transcriber | None = None,
     captions: CaptionExtractor | None = None,
+    watcher: ClipModel | None = None,
     capabilities: CapabilitySet | None = None,
     artifacts: ArtifactStore | None = None,
     probe_binaries: bool = True,
@@ -233,7 +245,7 @@ async def build_perception(
         TextHandler(source=source, observer=observer),
         *_optional_image_handler(source, vision, observer),
         *_optional_pdf_handler(source, vision, observer),
-        *_video_handler(source, vision, transcriber, captions, observer, limiter),
+        *_video_handler(source, vision, transcriber, captions, watcher, observer, limiter),
         *_audio_handler(source, transcriber, observer),
         # The fallback claims "*", so it must be last: the registry breaks a
         # rank tie by registration order, and a fallback registered first would

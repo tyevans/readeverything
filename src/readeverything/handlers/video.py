@@ -63,6 +63,8 @@ from readeverything.domain.rendition import (
 from readeverything.domain.timeline import clamp_cues_to_duration, tile
 from readeverything.ports.audio import AudioExtractor
 from readeverything.ports.captions import CaptionExtractor
+from readeverything.ports.clip_source import ClipExtractor
+from readeverything.ports.clips import ClipModel
 from readeverything.ports.frames import FrameExtractor
 from readeverything.ports.limits import Limiter
 from readeverything.ports.observation import Observer, emit
@@ -109,6 +111,13 @@ CAPTION_MARKER = "(caption)"
 #: constant, for the same reason, as `audio.EXTRACTED_MIME`.
 EXTRACTED_MIME = "audio/wav"
 
+#: The mimetype handed to the clip model. `ClipExtractor.clip` is specified to
+#: return encoded video bytes whatever the source container was, and the ffmpeg
+#: adapter muxes mp4 — so this describes what is actually passed rather than
+#: what was on disk. Declared here rather than imported from the adapter, for
+#: the same reason `EXTRACTED_MIME` is: no handler imports an adapter.
+CLIP_MIME = "video/mp4"
+
 _FRAME_PROMPT = "Describe what is visible in this video frame, in one or two sentences."
 
 #: What `represent` calls itself when it narrates.
@@ -126,6 +135,31 @@ _UNEXPECTED_MOMENT = ("(this moment could not be read)", "failed")
 class FrameAtParams(BaseModel):
     seconds: float = Field(
         default=0.0, ge=0.0, description="Point in the timeline to extract a frame from."
+    )
+
+
+#: Measured against llama.cpp b10438 serving qwen3.8-27b-mtp on 2026-08-15: a
+#: 2-second clip cost 5,242 prompt tokens and a 10-second clip 21,787. Crucially,
+#: re-encoding the source to a lower frame rate changed NOTHING — the server
+#: resamples by timestamp, so cost is a function of DURATION alone and a caller
+#: cannot turn it down. That is what makes the cap below load-bearing rather
+#: than a tuning knob.
+TOKENS_PER_CLIP_SECOND = 2180
+
+#: The default ceiling on one `watch_segment`, about 65k prompt tokens. A
+#: request past it is refused rather than truncated: a watch that silently
+#: covered the first 30 seconds of a ten-minute range and reported success
+#: would be a claim about time the model never saw.
+MAX_CLIP_SECONDS = 30.0
+
+_WATCH_PROMPT = "Describe what happens in this video segment, including any motion or change."
+
+
+class WatchSegmentParams(BaseModel):
+    start_s: float = Field(default=0.0, ge=0.0, description="Start of the range to watch.")
+    end_s: float = Field(default=10.0, gt=0.0, description="End of the range to watch.")
+    prompt: str = Field(
+        default=_WATCH_PROMPT, description="What to ask the model about the segment."
     )
 
 
@@ -187,6 +221,9 @@ class VideoHandler:
         audio: AudioExtractor | None = None,
         transcriber: Transcriber | None = None,
         captions: CaptionExtractor | None = None,
+        clips: ClipExtractor | None = None,
+        watcher: ClipModel | None = None,
+        max_clip_s: float = MAX_CLIP_SECONDS,
         sample_interval_s: float = DEFAULT_SAMPLE_INTERVAL_S,
         observer: Observer | None = None,
         limiter: Limiter | None = None,
@@ -200,6 +237,9 @@ class VideoHandler:
         self._audio = audio
         self._transcriber = transcriber
         self._captions = captions
+        self._clips = clips
+        self._watcher = watcher
+        self._max_clip_s = max_clip_s
         self._interval_s = sample_interval_s
         self._observer = observer
         self._limiter = limiter
@@ -279,6 +319,22 @@ class VideoHandler:
                     level=DetailLevel.DEEP,
                 )
             )
+        if self._clips is not None and self._watcher is not None:
+            affordances.append(
+                Affordance(
+                    name="watch_segment",
+                    description=(
+                        f"Watch a short range of the video — motion included, not one "
+                        f"still. Use this when the question is about what HAPPENS in a "
+                        f"stretch of time rather than what is visible at a moment. "
+                        f"Expensive and hard-capped at {self._max_clip_s:g}s: read the "
+                        f"transcript first to find the range worth watching."
+                    ),
+                    params=WatchSegmentParams,
+                    requires=frozenset({Capability.FFMPEG, Capability.VISION}),
+                    level=DetailLevel.DEEP,
+                )
+            )
         return tuple(affordances)
 
     async def invoke(self, ref: SourceRef, name: str, params: BaseModel) -> Rendition:
@@ -299,6 +355,12 @@ class VideoHandler:
                 if not isinstance(params, DescribeFrameParams):
                     raise TypeError(f"expected DescribeFrameParams, got {type(params).__name__}")
                 return await self._describe_frame(ref, params.seconds, params.prompt)
+            case "watch_segment":
+                if self._clips is None or self._watcher is None:
+                    raise UnknownAffordanceError(name, (a.name for a in self.affordances()))
+                if not isinstance(params, WatchSegmentParams):
+                    raise TypeError(f"expected WatchSegmentParams, got {type(params).__name__}")
+                return await self._watch_segment(ref, params.start_s, params.end_s, params.prompt)
             case _:
                 raise UnknownAffordanceError(name, (a.name for a in self.affordances()))
 
@@ -350,6 +412,84 @@ class VideoHandler:
                 end_s=max(c.span.end_s for c in window),
             ),
             content=TextContent("\n".join(lines)),
+        )
+
+    async def _watch_segment(
+        self, ref: SourceRef, start_s: float, end_s: float, prompt: str
+    ) -> Rendition:
+        """What happens across a bounded range, motion included.
+
+        The locator is the range REQUESTED, not the range delivered. `-ss`
+        seeks by keyframe, so ffmpeg may hand back a clip starting slightly
+        early; the request is a fact about the question asked, while the
+        delivered range is an approximation of it that would take another
+        probe to learn. Reporting the approximation as though it were measured
+        is the defect this project keeps finding.
+
+        One `LocatorSegment` over the whole span, never one per second: this is
+        a joint description of a stretch of time, and splitting it would invent
+        precision the model never had.
+        """
+        if self._clips is None or self._watcher is None:
+            raise UnknownAffordanceError("watch_segment", (a.name for a in self.affordances()))
+        span_s = end_s - start_s
+        if span_s <= 0:
+            return self._refused_watch(
+                ref,
+                f"a segment must end after it starts; got {_timestamp(start_s)} "
+                f"to {_timestamp(end_s)}",
+            )
+        if span_s > self._max_clip_s:
+            # REFUSED, NOT TRUNCATED. Cost is ~2,180 prompt tokens per second
+            # of duration and cannot be reduced from the client, so a
+            # ten-minute request is 1.3M tokens. Quietly watching the first 30
+            # seconds and reporting success would be a claim about time the
+            # model never saw — and the caller would have no way to tell.
+            return self._refused_watch(
+                ref,
+                f"a {span_s:g}s segment costs about "
+                f"{int(span_s * TOKENS_PER_CLIP_SECOND):,} prompt tokens at "
+                f"~{TOKENS_PER_CLIP_SECOND} tokens per second, and this handler's cap is "
+                f"{self._max_clip_s:g}s. Ask for a narrower range, or read the transcript "
+                f"to find the part worth watching.",
+            )
+        try:
+            path = await self._source.local_path(ref.uri)
+        except Exception:
+            return self._refused_watch(ref, "this video has no local path to cut a clip from")
+        async with self._limit(Capability.VISION):
+            try:
+                data = await self._clips.clip(path, start_s, end_s)
+            except Exception as exc:
+                return self._refused_watch(ref, f"the segment could not be cut ({exc})")
+            if data is None:
+                return self._refused_watch(
+                    ref,
+                    f"no video could be cut from {_timestamp(start_s)} to "
+                    f"{_timestamp(end_s)}; the range may lie past the end of the file",
+                )
+            try:
+                text = await self._watcher.watch(data, CLIP_MIME, prompt)
+            except Exception as exc:
+                return self._refused_watch(ref, f"the model could not watch the segment ({exc})")
+        return Rendition(
+            locator=TimeSpan(start_s=start_s, end_s=end_s),
+            content=TextContent(text),
+        )
+
+    def _refused_watch(self, ref: SourceRef, detail: str) -> Rendition:
+        """What every unanswerable `watch_segment` returns.
+
+        Located by `ByteRange` over the whole file rather than by the requested
+        `TimeSpan`, for the reason `_degraded_frame` and `_degraded_read` both
+        give: a `TimeSpan` would assert a stretch of timeline this call never
+        established the file has — which is exactly wrong when the refusal is
+        "that range is past the end".
+        """
+        return Rendition(
+            locator=ByteRange(0, max(1, ref.size_bytes)),
+            content=TextContent(detail),
+            degraded=True,
         )
 
     def _degraded_read(self, ref: SourceRef, detail: str) -> Rendition:
