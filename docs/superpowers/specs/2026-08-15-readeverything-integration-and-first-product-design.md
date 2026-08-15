@@ -438,6 +438,57 @@ The design:
 - **Layer two is ordered last in the plan.** If it proves troublesome it
   is dropped without endangering anything else in this spec.
 
+### 7.5 Outcome: layer two was dropped, and why the §7.3 ruling was wrong
+
+Layer one shipped. **`MediaAwareBackend` was not built.** The §7.3 ruling
+above is preserved unedited because the reasoning is the thing worth
+learning from, and it was mistaken.
+
+The ruling rested on facts taken from a research report rather than
+verified against the package. Introspected directly from
+`deepagents==0.7.6` during execution, the real surface is:
+
+```
+read(file_path, offset=0, limit=2000) -> ReadResult      # NOT str
+ReadResult (dataclass): error, file_data, total_lines, start_line,
+                        end_line, next_offset, no_lines_requested
+FileData (TypedDict):   content: str, encoding: str ("utf-8" | "base64"),
+                        created_at?, modified_at?
+18 methods: ls, read, grep, glob, write, delete, edit, download_files,
+            upload_files + async mirrors (als, aread, …)
+```
+
+Three corrections follow, in increasing order of importance:
+
+1. **`read` does not return a string.** It returns a dataclass carrying
+   line-pagination metadata, so an override must also compute
+   `total_lines`, `start_line`, `end_line` and `next_offset` correctly for
+   arbitrary rendered text. That is a different and larger design than
+   "return a meaningful string".
+2. **Base64 is not mangling.** §7.3 argued that `FilesystemBackend`
+   base64-encoding a photograph was the failure this library corrects. But
+   `FileData.encoding` explicitly admits `"base64"` — it is the protocol's
+   designed path for binary, not an accident. The rhetorical core of the
+   ruling was simply wrong.
+3. **`offset` and `limit` are line-based, not character-based.** §7.3
+   instructed mapping `limit` onto `Budget(max_chars=limit)`, which would
+   have treated a 2000-line window as a 2000-character budget. A real bug,
+   caught only because the plan made protocol re-verification a mandatory
+   step before any code was written.
+
+The surface is 18 methods to delegate rather than 5, against a
+fast-moving `0.x`. Weighed against a rationale whose premise did not
+survive contact with the package, dropping it is right, and §10 already
+excluded it from acceptance for precisely this exposure.
+
+**What ships instead:** `create_deep_agent(tools=build_tools(perception))`,
+which works today with no new dependency, is documented in the README, and
+is covered by a test.
+
+**The transferable lesson**, and the second time this project has paid for
+it: a subagent's factual claim about the shape of code is still a claim.
+A ruling that asserts what code does must quote the code.
+
 ---
 
 ## 8. Residual defects
