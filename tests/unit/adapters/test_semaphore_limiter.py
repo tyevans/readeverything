@@ -84,3 +84,37 @@ async def test_the_limit_is_released_when_the_body_raises() -> None:
             raise RuntimeError("boom")
     async with limiter.limit(Capability.VISION):
         pass  # reaching here is the assertion
+
+
+def test_one_limiter_still_bounds_on_a_second_event_loop() -> None:
+    """A limiter is a caller's configuration, and configuration outlives a loop.
+
+    Deliberately synchronous: it drives two `asyncio.run` calls itself, which
+    is the reuse pattern that used to hand loop two a semaphore owned by loop
+    one and raise `RuntimeError: ... is bound to a different event loop`
+    under contention. Contention is required to see it — a semaphore binds a
+    loop when it must wait, so the workers must actually queue.
+    """
+    limiter = SemaphoreLimiter({Capability.VISION: 2})
+
+    async def run_batch() -> int:
+        peak = 0
+        in_flight = 0
+
+        async def worker() -> None:
+            nonlocal peak, in_flight
+            async with limiter.limit(Capability.VISION):
+                in_flight += 1
+                peak = max(peak, in_flight)
+                await asyncio.sleep(0)
+                in_flight -= 1
+
+        await asyncio.gather(*(worker() for _ in range(10)))
+        return peak
+
+    first = asyncio.run(run_batch())
+    second = asyncio.run(run_batch())
+    # Not merely "did not raise": the second loop must be bounded too, or the
+    # fix could have been a fresh unbounded pass-through.
+    assert first == 2
+    assert second == 2
