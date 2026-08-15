@@ -26,6 +26,7 @@ from readeverything.domain.rendition import (
     TextContent,
     TranscriptCue,
 )
+from readeverything.handlers import video as video_module
 from readeverything.handlers.video import (
     CAPTION_MARKER,
     MOMENT_SEPARATOR,
@@ -1584,6 +1585,28 @@ async def test_a_region_narrows_what_the_model_sees(sample_video: str) -> None:
     assert isinstance(whole.content, TextContent)
     assert isinstance(part.content, TextContent)
     assert whole.content.text != part.content.text
+
+
+async def test_a_region_without_pillow_degrades_rather_than_raising(
+    sample_video: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`composition.py` builds `VideoHandler` regardless of whether Pillow is
+    installed, so a region request made without it must degrade — not raise
+    `ImportError` from a `from PIL import Image` no guard caught. Patching
+    the module's own `_PIL_AVAILABLE` name check exercises exactly the branch
+    `_ask_about_frame` takes when Pillow is genuinely absent, without needing
+    to fake Pillow's absence from `sys.modules` for a module that already
+    imports it nowhere at module scope."""
+    monkeypatch.setattr(video_module, "_PIL_AVAILABLE", False)
+    handler = _handler(sample_video, vision=FakeVision())
+    rendition = await handler.invoke(
+        _ref(),
+        "ask_about_image",
+        AskAboutFrameParams(question="q", seconds=1.0, x=0.0, y=0.0, w=0.5, h=0.5),
+    )
+    assert rendition.degraded
+    assert isinstance(rendition.content, TextContent)
+    assert "Pillow" in rendition.content.text
 
 
 async def test_an_unreachable_frame_degrades_rather_than_raising() -> None:
