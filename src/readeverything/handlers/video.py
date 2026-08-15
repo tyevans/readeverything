@@ -186,9 +186,15 @@ class VideoHandler:
     def _limit(self, capability: Capability) -> AbstractAsyncContextManager[None]:
         """One capability's bound, or nothing at all.
 
-        `None` is unbounded, which is this handler's behaviour before a limiter
-        existed. A default limiter would silently throttle every caller who
-        never asked for one.
+        `None` is unbounded — this handler's behaviour before a limiter existed.
+        The handler does not invent a default, because a handler that made its
+        own semaphore would bound itself independently of every other handler
+        sharing the same endpoint (spec §5.1).
+
+        That is not the same as the library being unbounded by default.
+        `build_perception` installs a `SemaphoreLimiter()` when a caller injects
+        none, so `None` arrives here only by constructing this handler directly
+        or by passing a limiter that deliberately bounds nothing.
         """
         if self._limiter is None:
             return nullcontext()
