@@ -183,6 +183,33 @@ class VideoHandler:
             locator=ByteRange(0, max(1, ref.size_bytes)), content=TextContent(detail), degraded=True
         )
 
+    async def _absent_frame_detail(self, path: str, seconds: float) -> str:
+        """Why `frame_at` returned nothing, distinguishing the cause when it can.
+
+        The generic message ("no frame could be decoded at ...") tells an agent
+        nothing actionable: it cannot tell whether to retry at a different
+        timestamp or give up. A probe of the header (one ffprobe read, paid
+        only on this already-degraded path) usually knows the duration, and a
+        request past it is the common case worth naming. A negative request is
+        named too, though `FrameAtParams` already forbids one via `ge=0.0`.
+        Within the duration, or when the probe itself fails or reports no
+        duration, this falls back to the generic message rather than guessing:
+        claiming "past the end" without knowing where the end is would be the
+        same defect wearing different clothes.
+        """
+        if seconds < 0.0:
+            return f"the requested time {_timestamp(seconds)} is negative; there is no such frame"
+        try:
+            facts = await self._probe.probe(path)
+        except Exception:
+            facts = None
+        if facts is not None and facts.duration_s > 0 and seconds >= facts.duration_s:
+            return (
+                f"the video is {facts.duration_s:g}s long; "
+                f"there is no frame at {_timestamp(seconds)}"
+            )
+        return f"no frame could be decoded at {_timestamp(seconds)}"
+
     async def _frame_at(self, ref: SourceRef, seconds: float) -> Rendition:
         try:
             path = await self._source.local_path(ref.uri)
@@ -194,7 +221,7 @@ class VideoHandler:
             frame = None
         if frame is None:
             return self._degraded_frame(
-                ref, seconds, f"no frame could be decoded at {_timestamp(seconds)}"
+                ref, seconds, await self._absent_frame_detail(path, seconds)
             )
         frame_span = TimeSpan(seconds, seconds + FALLBACK_FRAME_DURATION_S)
         return Rendition(locator=frame_span, content=ImageContent(data=frame, mime="image/png"))
@@ -212,7 +239,7 @@ class VideoHandler:
             frame = None
         if frame is None:
             return self._degraded_frame(
-                ref, seconds, f"no frame could be decoded at {_timestamp(seconds)}"
+                ref, seconds, await self._absent_frame_detail(path, seconds)
             )
         try:
             text = await self._vision.describe(frame, "image/png", prompt)

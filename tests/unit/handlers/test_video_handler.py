@@ -421,13 +421,62 @@ async def test_frame_at_returns_an_image_located_in_time(sample_video: str) -> N
     assert isinstance(rendition.locator, TimeSpan)
 
 
-async def test_a_frame_past_the_end_degrades_and_says_why(sample_video: str) -> None:
-    """Never an empty image presented as a frame — the measured trap."""
+async def test_a_frame_past_the_end_says_how_long_the_video_actually_is(
+    sample_video: str,
+) -> None:
+    """The name of this test used to promise "says why" while asserting only
+    that it degraded. An agent told "no frame could be decoded at 0:16:39.0"
+    cannot tell whether to retry elsewhere or give up; told the video is five
+    seconds long, it knows. The message is the useful part, so the test checks
+    the message.
+    """
     rendition = await _handler(sample_video).invoke(
         _ref(), "frame_at", FrameAtParams(seconds=999.0)
     )
     assert rendition.degraded
     assert not isinstance(rendition.content, ImageContent)
+    assert isinstance(rendition.content, TextContent)
+    assert "5" in rendition.content.text  # the real duration appears
+    assert "long" in rendition.content.text
+
+
+async def test_a_negative_frame_request_says_so() -> None:
+    """`FrameAtParams` forbids a negative value at the boundary, but the
+    handler's own message-selection logic must still name the cause rather
+    than fall through to the generic "no frame" text if it ever sees one."""
+    handler = _stub_handler(_facts(duration_s=5.0))
+    rendition = await handler.invoke(
+        _ref(), "frame_at", FrameAtParams.model_construct(seconds=-1.0)
+    )
+    assert rendition.degraded
+    assert isinstance(rendition.content, TextContent)
+    assert "negative" in rendition.content.text
+
+
+async def test_a_decode_failure_within_the_duration_keeps_the_generic_message() -> None:
+    """Within the duration, a `None` frame is a genuine decode failure, not a
+    past-the-end request — the probe knows there SHOULD be a frame there, so
+    claiming otherwise would be the same defect wearing different clothes."""
+    handler = _stub_handler(_facts(duration_s=5.0), frames=_NoFrames())
+    rendition = await handler.invoke(_ref(), "frame_at", FrameAtParams(seconds=2.0))
+    assert rendition.degraded
+    assert isinstance(rendition.content, TextContent)
+    assert "no frame could be decoded" in rendition.content.text
+    assert "long" not in rendition.content.text
+
+
+async def test_an_undeterminable_duration_falls_back_to_the_generic_message() -> None:
+    """When the probe itself fails, the handler does not know where the end
+    is, so it must not guess that the request was past it."""
+    handler = VideoHandler(
+        source=_PathSource("/nowhere.mp4"),
+        probe=_RaisingProbe(),
+        frames=_NoFrames(),
+    )
+    rendition = await handler.invoke(_ref(), "frame_at", FrameAtParams(seconds=999.0))
+    assert rendition.degraded
+    assert isinstance(rendition.content, TextContent)
+    assert "no frame could be decoded" in rendition.content.text
 
 
 async def test_frame_at_is_offered_without_vision() -> None:
