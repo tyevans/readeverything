@@ -66,6 +66,7 @@ if TYPE_CHECKING:
     from readeverything.ports.hashing import ContentHashing as ContentHashing
     from readeverything.ports.source import FileSource as FileSource
     from readeverything.ports.source import SourceReader as SourceReader
+    from readeverything.ports.vision import VisionModel as VisionModel
     from readeverything.registry.registry import MimeTypeRegistry as MimeTypeRegistry
     from readeverything.registry.registry import NoHandlerError as NoHandlerError
     from readeverything.testing.artifact_compliance import (
@@ -75,6 +76,7 @@ if TYPE_CHECKING:
     from readeverything.testing.fakes import FakeSource as FakeSource
     from readeverything.testing.fakes import FakeTranscriber as FakeTranscriber
     from readeverything.testing.fakes import FakeVision as FakeVision
+    from readeverything.testing.fakes import FakeVisionRefusing as FakeVisionRefusing
     from readeverything.testing.handler_compliance import (
         MediaHandlerCompliance as MediaHandlerCompliance,
     )
@@ -102,6 +104,7 @@ _LAZY: dict[str, str] = {
     "FakeSource": "readeverything.testing.fakes",
     "FakeTranscriber": "readeverything.testing.fakes",
     "FakeVision": "readeverything.testing.fakes",
+    "FakeVisionRefusing": "readeverything.testing.fakes",
     "FileSource": "readeverything.ports.source",
     "FilesystemArtifactStore": "readeverything.adapters.artifact_store",
     "ImageContent": "readeverything.domain.rendition",
@@ -136,6 +139,7 @@ _LAZY: dict[str, str] = {
     "ToolResult": "readeverything.agent.results",
     "TranscriptCue": "readeverything.domain.rendition",
     "UnknownAffordanceError": "readeverything.domain.errors",
+    "VisionModel": "readeverything.ports.vision",
     "build_tools": "readeverything.agent.tools",
 }
 
