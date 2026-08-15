@@ -93,6 +93,53 @@ async def test_represent_truncates_and_says_so() -> None:
     assert "truncated" in rendered.degradations[0].what
 
 
+def _empty_handler() -> TextHandler:
+    return TextHandler(source=FakeSource({"empty.txt": b""}))
+
+
+def _empty_ref() -> SourceRef:
+    return SourceRef(
+        uri="empty.txt",
+        mime=MimeType.parse("text/plain"),
+        content_hash=ContentHash("d" * 64),
+        size_bytes=0,
+    )
+
+
+@pytest.mark.parametrize("max_chars", [0, 1, 5, 10])
+async def test_the_truncation_degradation_reports_the_characters_actually_kept(
+    max_chars: int,
+) -> None:
+    """The rendition and its own degradation must not contradict each other.
+
+    A zero-width rendition is inexpressible — `CharSpan(0, 0)` raises — so a
+    budget of zero still keeps one character. The degradation used to report the
+    budget instead, claiming "kept 0" of text that was not zero characters long.
+    """
+    rendered = await _handler().represent(_ref(), Budget(max_chars=max_chars))
+    assert rendered.degradations[0].detail.startswith(f"kept {len(rendered.text)} of ")
+
+
+async def test_a_truncated_file_is_never_indexed_as_an_empty_one() -> None:
+    """The placeholder asserted the source was empty when it merely did not fit.
+
+    The empty-source fallback fired whenever the text was empty AFTER
+    truncation, so a 16-character file under a zero budget was indexed as
+    `[empty text file: a.txt]` — longer than the budget, and false about the
+    source. Anything reading that index learned something untrue.
+    """
+    rendered = await _handler().represent(_ref(), Budget(max_chars=0))
+    assert "empty text file" not in rendered.text
+    assert rendered.text == CONTENT.decode()[:1]
+
+
+async def test_a_genuinely_empty_file_keeps_its_placeholder() -> None:
+    """Guard against fixing the false-empty claim by deleting the true one."""
+    rendered = await _empty_handler().represent(_empty_ref(), Budget(max_chars=None))
+    assert rendered.text == "[empty text file: empty.txt]"
+    assert rendered.degradations == ()
+
+
 class TestTextHandlerCompliance(MediaHandlerCompliance):
     @pytest.fixture
     def handler(self) -> TextHandler:

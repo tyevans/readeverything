@@ -223,6 +223,23 @@ async def test_a_decodable_image_with_vision_still_reports_no_degradations() -> 
     assert rendered.degradations == ()
 
 
+@pytest.mark.parametrize("max_chars", [0, 1, 5, 20])
+async def test_the_truncation_degradation_reports_the_characters_actually_kept(
+    max_chars: int,
+) -> None:
+    """The rendition and its own degradation must not contradict each other.
+
+    A zero-width rendition is inexpressible — `CharSpan(0, 0)` raises — so a
+    budget of zero still keeps one character. The degradation used to report the
+    budget rather than that character, claiming "kept 0" of text one character
+    long.
+    """
+    rendered = await _handler().represent(_ref(), Budget(max_chars=max_chars))
+    truncations = [d for d in rendered.degradations if d.what == "text truncated"]
+    assert truncations
+    assert truncations[0].detail.startswith(f"kept {len(rendered.text)} of ")
+
+
 class TestImageHandlerCompliance(MediaHandlerCompliance):
     @pytest.fixture
     def handler(self) -> ImageHandler:
