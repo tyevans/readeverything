@@ -5,6 +5,10 @@ not: dimensions, format and mode come from the header alone, so pointing an
 agent at a directory of photographs costs no inference. Everything a model must
 answer is behind an affordance the agent chooses to invoke.
 
+The card costs no model call. It does pay a full decode, because `Image.open`
+is lazy and truncation only surfaces on first pixel access — that decode is
+what makes the never-raise property real.
+
 `requires()` is empty on purpose. A deployment with no vision model can still
 list, size and identify images — it just cannot describe them, and the registry
 drops those affordances rather than the handler.
@@ -16,17 +20,51 @@ import io
 from typing import ClassVar
 
 from PIL import Image, UnidentifiedImageError
+from pydantic import BaseModel, Field
 
-from readeverything.domain.affordance import Affordance
+from readeverything.domain.affordance import Affordance, DetailLevel
 from readeverything.domain.capability import Capability
 from readeverything.domain.card import Card, Segment
+from readeverything.domain.errors import DomainError, InfrastructureError, UnknownAffordanceError
 from readeverything.domain.identity import MediaKind, SourceRef
-from readeverything.domain.locators import BBox
+from readeverything.domain.locator_map import LocatorMap, LocatorSegment
+from readeverything.domain.locators import BBox, CharSpan
+from readeverything.domain.rendition import (
+    Budget,
+    Degradation,
+    ImageContent,
+    Rendered,
+    Rendition,
+    TextContent,
+)
 from readeverything.ports.source import SourceReader
 from readeverything.ports.vision import VisionModel
 
 #: The whole frame, in the normalised coordinates every BBox uses.
 WHOLE_IMAGE = BBox(page=None, x=0.0, y=0.0, w=1.0, h=1.0)
+
+_DESCRIBE_PROMPT = "Describe this image in two or three sentences."
+_OCR_PROMPT = (
+    "Transcribe all text visible in this image, exactly as written. "
+    "If there is no text, reply with: (no text)"
+)
+
+
+class DescribeImageParams(BaseModel):
+    prompt: str = Field(
+        default=_DESCRIBE_PROMPT, description="What to ask the model about the image."
+    )
+
+
+class OcrParams(BaseModel):
+    pass
+
+
+class CropParams(BaseModel):
+    x: float = Field(default=0.0, ge=0.0, le=1.0, description="Left edge, 0-1 of image width.")
+    y: float = Field(default=0.0, ge=0.0, le=1.0, description="Top edge, 0-1 of image height.")
+    w: float = Field(default=1.0, gt=0.0, le=1.0, description="Width, 0-1 of image width.")
+    h: float = Field(default=1.0, gt=0.0, le=1.0, description="Height, 0-1 of image height.")
 
 
 class ImageHandler:
@@ -45,7 +83,35 @@ class ImageHandler:
         return frozenset()
 
     def affordances(self) -> tuple[Affordance, ...]:
-        return ()
+        crop = Affordance(
+            name="crop_region",
+            description=(
+                "Return a rectangular region of the image as PNG bytes. "
+                "Coordinates are fractions of the image, 0 to 1."
+            ),
+            params=CropParams,
+            requires=frozenset(),
+            level=DetailLevel.SEGMENT,
+        )
+        if self._vision is None:
+            return (crop,)
+        return (
+            crop,
+            Affordance(
+                name="describe_image",
+                description="Describe what is visible in the image, in prose.",
+                params=DescribeImageParams,
+                requires=frozenset({Capability.VISION}),
+                level=DetailLevel.DEEP,
+            ),
+            Affordance(
+                name="ocr",
+                description="Transcribe text visible in the image.",
+                params=OcrParams,
+                requires=frozenset({Capability.VISION}),
+                level=DetailLevel.DEEP,
+            ),
+        )
 
     async def _open(self, ref: SourceRef) -> Image.Image | None:
         """The decoded image, or None if the bytes are not a readable image."""
@@ -82,4 +148,104 @@ class ImageHandler:
             outline=(Segment(WHOLE_IMAGE, "whole image"),),
             excerpt=None,
             affordances=self.affordances(),
+        )
+
+    async def _require_image(self, ref: SourceRef) -> Image.Image:
+        image = await self._open(ref)
+        if image is None:
+            raise DomainError(f"{ref.uri} is not a readable image")
+        return image
+
+    async def _see(self, ref: SourceRef, prompt: str) -> str:
+        if self._vision is None:
+            raise UnknownAffordanceError("describe_image", (a.name for a in self.affordances()))
+        data = await self._source.read_bytes(ref.uri)
+        text = await self._vision.describe(data, str(ref.mime), prompt)
+        if not text.strip():
+            # The port's return type is `str`, so a model that answers with
+            # nothing is a legal implementation. An empty description must not
+            # reach an index as though it were an observation.
+            raise InfrastructureError(f"vision model returned no description for {ref.uri}")
+        return text
+
+    async def invoke(self, ref: SourceRef, name: str, params: BaseModel) -> Rendition:
+        match name:
+            case "crop_region":
+                if not isinstance(params, CropParams):
+                    raise TypeError(f"expected CropParams, got {type(params).__name__}")
+                image = await self._require_image(ref)
+                box = (
+                    int(params.x * image.width),
+                    int(params.y * image.height),
+                    max(
+                        int((params.x + params.w) * image.width),
+                        int(params.x * image.width) + 1,
+                    ),
+                    max(
+                        int((params.y + params.h) * image.height),
+                        int(params.y * image.height) + 1,
+                    ),
+                )
+                buffer = io.BytesIO()
+                image.crop(box).save(buffer, format="PNG")
+                return Rendition(
+                    locator=BBox(page=None, x=params.x, y=params.y, w=params.w, h=params.h),
+                    content=ImageContent(data=buffer.getvalue(), mime="image/png"),
+                )
+            case "describe_image":
+                if not isinstance(params, DescribeImageParams):
+                    raise TypeError(f"expected DescribeImageParams, got {type(params).__name__}")
+                text = await self._see(ref, params.prompt)
+                return Rendition(locator=WHOLE_IMAGE, content=TextContent(text))
+            case "ocr":
+                if not isinstance(params, OcrParams):
+                    raise TypeError(f"expected OcrParams, got {type(params).__name__}")
+                text = await self._see(ref, _OCR_PROMPT)
+                return Rendition(locator=WHOLE_IMAGE, content=TextContent(text))
+            case _:
+                raise UnknownAffordanceError(name, (a.name for a in self.affordances()))
+
+    async def represent(self, ref: SourceRef, budget: Budget) -> Rendered:
+        image = await self._open(ref)
+        if image is None:
+            facts = f"Unreadable image {ref.uri}, {ref.size_bytes} bytes."
+        else:
+            facts = (
+                f"Image {ref.uri}, {image.width}x{image.height} "
+                f"{image.format or 'unknown'} ({image.mode}), {ref.size_bytes} bytes."
+            )
+        degradations: tuple[Degradation, ...] = ()
+        described = ""
+        if self._vision is None:
+            degradations = (
+                Degradation(
+                    what="vision unavailable",
+                    detail="no vision model configured; only metadata was indexed",
+                ),
+            )
+        else:
+            try:
+                described = await self._see(ref, _DESCRIBE_PROMPT)
+            except InfrastructureError as exc:
+                # An empty or failed completion is not a description. Saying so
+                # is better than indexing silence as an observation.
+                degradations = (Degradation(what="vision unavailable", detail=str(exc)),)
+        full = f"{facts} {described}".strip() if described else facts
+        text = full
+        if budget.max_chars is not None and len(full) > budget.max_chars:
+            degradations = (
+                *degradations,
+                Degradation(
+                    what="text truncated",
+                    detail=f"kept {budget.max_chars} of {len(full)} characters",
+                ),
+            )
+            text = full[: budget.max_chars]
+        if not text:
+            text = full[:1] or "?"
+        return Rendered(
+            text=text,
+            locator_map=LocatorMap.build((LocatorSegment(CharSpan(0, len(text)), WHOLE_IMAGE),)),
+            barriers=(),
+            degradations=degradations,
         )
