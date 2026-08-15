@@ -17,6 +17,7 @@ into an adapter.
 
 from __future__ import annotations
 
+import importlib.util
 import io
 from enum import Enum
 from typing import ClassVar
@@ -48,14 +49,15 @@ from readeverything.domain.rendition import (
     TextContent,
 )
 from readeverything.ports.probe_media import MediaProbe
+from readeverything.ports.recognition import TextRecognizer
 from readeverything.ports.source import SourceReader
 
-try:
-    import PIL  # noqa: F401  # presence check only; page_image degrades without it
-except ImportError:  # pragma: no cover - exercised via a patched sys.modules
-    _PIL_AVAILABLE = False
-else:
-    _PIL_AVAILABLE = True
+#: Pillow is optional here (unlike `image.py`, which requires it outright):
+#: `page_image`/`ocr_page` degrade without it rather than the whole handler
+#: failing to import. Checked by name rather than imported, so this module
+#: never itself depends on Pillow — `PdfPage.render(...).to_pil()` is the
+#: only thing that touches it, and only once this is True.
+_PIL_AVAILABLE = importlib.util.find_spec("PIL") is not None
 
 #: Every page's text ends with this, and the page's `LocatorSegment` INCLUDES
 #: it. `LocatorMap` demands total, gapless, zero-start coverage and
@@ -132,6 +134,11 @@ class PageImageParams(BaseModel):
     dpi: int = Field(default=150, gt=0, description="Render resolution, in dots per inch.")
 
 
+class OcrPageParams(BaseModel):
+    page: int = Field(default=1, ge=1, description="1-indexed page number to OCR.")
+    dpi: int = Field(default=150, gt=0, description="Render resolution, in dots per inch.")
+
+
 def _listed(numbers: list[int], limit: int = 10) -> str:
     head = ", ".join(str(number) for number in numbers[:limit])
     if len(numbers) <= limit:
@@ -152,10 +159,7 @@ class PdfHandler:
         *,
         source: SourceReader,
         probe: MediaProbe,
-        # Typed `object | None` only until the `TextRecognizer` port lands with
-        # OCR over a rendered page; the handler stores it and does not call it
-        # yet, so a narrower type here would be a promise nothing keeps.
-        recognizer: object | None = None,
+        recognizer: TextRecognizer | None = None,
     ) -> None:
         self._source = source
         self._probe = probe
@@ -192,6 +196,19 @@ class PdfHandler:
                 level=DetailLevel.SEGMENT,
             ),
         ]
+        if self._recognizer is not None:
+            affordances.append(
+                Affordance(
+                    name="ocr_page",
+                    description=(
+                        "Read a rendered page with a vision model, for pages with no "
+                        "text layer of their own."
+                    ),
+                    params=OcrPageParams,
+                    requires=frozenset({Capability.VISION}),
+                    level=DetailLevel.DEEP,
+                )
+            )
         return tuple(affordances)
 
     def _open(self, data: bytes) -> pdfium.PdfDocument | None:
@@ -258,6 +275,10 @@ class PdfHandler:
                 if not isinstance(params, PageImageParams):
                     raise TypeError(f"expected PageImageParams, got {type(params).__name__}")
                 return await self._page_image(ref, params.page, params.dpi)
+            case "ocr_page":
+                if not isinstance(params, OcrPageParams):
+                    raise TypeError(f"expected OcrPageParams, got {type(params).__name__}")
+                return await self._ocr_page(ref, params.page, params.dpi)
             case _:
                 raise UnknownAffordanceError(name, (a.name for a in self.affordances()))
 
@@ -321,6 +342,16 @@ class PdfHandler:
         finally:
             document.close()
 
+    def _render_png(self, page: pdfium.PdfPage, dpi: int) -> bytes:
+        bitmap = page.render(scale=dpi / 72)
+        try:
+            pil_image = bitmap.to_pil()
+        finally:
+            bitmap.close()
+        buffer = io.BytesIO()
+        pil_image.save(buffer, format="PNG")
+        return buffer.getvalue()
+
     async def _page_image(self, ref: SourceRef, number: int, dpi: int) -> Rendition:
         data = await self._source.read_bytes(ref.uri)
         document = self._open(data)
@@ -339,20 +370,42 @@ class PdfHandler:
                     PageRef(number),
                     "page could not be rendered: Pillow is not installed",
                 )
-            page = document[number - 1]
-            bitmap = page.render(scale=dpi / 72)
-            try:
-                pil_image = bitmap.to_pil()
-            finally:
-                bitmap.close()
-            buffer = io.BytesIO()
-            pil_image.save(buffer, format="PNG")
+            png = self._render_png(document[number - 1], dpi)
             return Rendition(
                 locator=PageRef(number),
-                content=ImageContent(data=buffer.getvalue(), mime="image/png"),
+                content=ImageContent(data=png, mime="image/png"),
             )
         finally:
             document.close()
+
+    async def _ocr_page(self, ref: SourceRef, number: int, dpi: int) -> Rendition:
+        if self._recognizer is None:
+            raise UnknownAffordanceError("ocr_page", (a.name for a in self.affordances()))
+        data = await self._source.read_bytes(ref.uri)
+        document = self._open(data)
+        if document is None:
+            return self._degraded_text(
+                ByteRange(0, max(1, ref.size_bytes)), f"{ref.uri} could not be opened as a PDF"
+            )
+        try:
+            if number > len(document):
+                return self._degraded_text(
+                    ByteRange(0, max(1, ref.size_bytes)),
+                    f"page {number} does not exist; the document has {len(document)} page(s)",
+                )
+            if not _PIL_AVAILABLE:
+                return self._degraded_text(
+                    PageRef(number),
+                    "page could not be rendered: Pillow is not installed",
+                )
+            png = self._render_png(document[number - 1], dpi)
+        finally:
+            document.close()
+        # A model's reading of the page, not the document's own bytes — marked
+        # `degraded` so a consumer indexing this text knows which it has, the
+        # same distinction this project already draws for synthesized text.
+        text = await self._recognizer.recognize(png, "image/png")
+        return Rendition(locator=PageRef(number), content=TextContent(text), degraded=True)
 
     async def represent(self, ref: SourceRef, budget: Budget) -> Rendered:
         data = await self._source.read_bytes(ref.uri)

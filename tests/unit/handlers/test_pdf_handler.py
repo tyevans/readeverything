@@ -2,16 +2,21 @@ import pytest
 from tests.fixtures_pdf import blank, born_digital, many_pages, scanned_like
 
 from readeverything.adapters.pdfium_probe import PdfiumProbe
+from readeverything.adapters.vision_recognizer import VisionTextRecognizer
+from readeverything.domain.capability import CapabilitySet
 from readeverything.domain.identity import ContentHash, MimeType, SourceRef
 from readeverything.domain.locators import BBox, CharSpan, PageRef
-from readeverything.domain.rendition import Budget, ImageContent
+from readeverything.domain.rendition import Budget, ImageContent, TextContent
 from readeverything.handlers.pdf import (
+    OcrPageParams,
     PageImageParams,
     PageRegionParams,
     PdfHandler,
     ReadPageParams,
 )
-from readeverything.testing.fakes import FakeSource
+from readeverything.ports.recognition import TextRecognizer
+from readeverything.registry.registry import MimeTypeRegistry
+from readeverything.testing.fakes import FakeSource, FakeVision
 from readeverything.testing.handler_compliance import MediaHandlerCompliance
 
 COMPLIANCE_PDF = born_digital(["Alpha.", "Bravo."])
@@ -26,12 +31,16 @@ def _ref(uri: str = "a.pdf", size_bytes: int = 1024) -> SourceRef:
     )
 
 
-def _handler(data: bytes, *, recognizer: object | None = None) -> PdfHandler:
+def _handler(data: bytes, *, recognizer: TextRecognizer | None = None) -> PdfHandler:
     return PdfHandler(
         source=FakeSource({"a.pdf": data, "somewhere/else": data, "compliance-subject": data}),
         probe=PdfiumProbe(),
         recognizer=recognizer,
     )
+
+
+def _pdf_handler(*, recognizer: TextRecognizer | None = None) -> PdfHandler:
+    return _handler(COMPLIANCE_PDF, recognizer=recognizer)
 
 
 async def test_every_character_resolves_to_the_page_it_came_from() -> None:
@@ -199,6 +208,7 @@ async def test_a_page_that_extracts_nothing_still_owns_a_character() -> None:
 async def test_read_page_returns_that_page_located_at_that_page() -> None:
     handler = _handler(born_digital(["Alpha.", "Bravo.", "Charlie."]))
     rendition = await handler.invoke(_ref(), "read_page", ReadPageParams(page=2))
+    assert isinstance(rendition.content, TextContent)
     assert "Bravo" in rendition.content.text
     assert rendition.locator == PageRef(2)
 
@@ -227,6 +237,8 @@ async def test_page_region_bbox_uses_a_top_left_origin() -> None:
     bottom = await handler.invoke(
         _ref(), "page_region", PageRegionParams(page=1, x=0.0, y=0.5, w=1.0, h=0.5)
     )
+    assert isinstance(top.content, TextContent)
+    assert isinstance(bottom.content, TextContent)
     assert "Alpha" in top.content.text
     assert "Alpha" not in bottom.content.text
 
@@ -250,6 +262,24 @@ async def test_page_image_returns_image_content_a_vision_tool_can_read() -> None
     assert isinstance(rendition.content, ImageContent)
     assert rendition.content.mime == "image/png"
     assert rendition.content.data.startswith(b"\x89PNG")
+
+
+async def test_ocr_output_is_marked_as_a_model_reading_not_extraction() -> None:
+    """OCR is a model's reading of an image, not the document's own bytes. A
+    consumer indexing it is entitled to know which it has — the same
+    distinction drawn for synthesized text."""
+    handler = _handler(scanned_like(), recognizer=VisionTextRecognizer(vision=FakeVision()))
+    rendition = await handler.invoke(_ref(), "ocr_page", OcrPageParams(page=1))
+    assert rendition.degraded
+
+
+async def test_ocr_is_not_offered_without_a_vision_capability() -> None:
+    """Negotiation, not a runtime apology: the affordance must not appear."""
+    registry = MimeTypeRegistry(
+        handlers=[_pdf_handler(recognizer=None)], capabilities=CapabilitySet.empty()
+    )
+    names = {a.name for a in registry.available_affordances(registry.handlers[0])}
+    assert "ocr_page" not in names
 
 
 class TestPdfHandlerCompliance(MediaHandlerCompliance):
