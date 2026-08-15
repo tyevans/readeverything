@@ -230,9 +230,8 @@ def build_tools(perception: Perception) -> list[BaseTool]:
                 "Ask a vision model a question about a picture — a photograph, a page "
                 "of a PDF, or a frame of a video. Give `where` to say which page, which "
                 "moment, or which rectangular region; omit it for the whole image. "
-                "You do not need to call inspect_path first. This runs a model and is "
-                "the most expensive thing you can do: for a video, read the transcript "
-                "before you look at frames."
+                "You do not need to call inspect_path first. This runs a vision model — "
+                "for a video, read the transcript before you look at frames."
             ),
             args_schema=AskAboutImageParams,
             handle_validation_error=_render_validation_error,
