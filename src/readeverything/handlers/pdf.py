@@ -21,7 +21,14 @@ import importlib.util
 import io
 import time
 from enum import Enum
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
+
+if TYPE_CHECKING:
+    # Annotation-only, per `regions.py`'s own pattern: `from __future__ import
+    # annotations` (above) keeps this out of runtime evaluation, so it costs
+    # nothing when Pillow is absent. `PIL` stays confined to `handlers/image.py`
+    # and `handlers/regions.py` at runtime; only the type checker sees this.
+    from PIL import Image
 
 try:
     import pypdfium2 as pdfium  # type: ignore[import-untyped]  # pypdfium2 ships no py.typed
@@ -325,11 +332,15 @@ class PdfHandler:
             case _:
                 raise UnknownAffordanceError(name, (a.name for a in self.affordances()))
 
-    def _degraded_text(self, locator: PageRef | ByteRange, detail: str) -> Rendition:
+    def _degraded_text(self, locator: PageRef | ByteRange | BBox, detail: str) -> Rendition:
         """What every out-of-range or missing-page request returns.
 
         Never an exception: an agent guessing a page number gets a result it
-        can read and correct.
+        can read and correct. `BBox` joined the union for `ask_about_image`'s
+        two post-region-resolution degradations, where the caller's rectangle
+        is exactly what a consumer needs to know what was asked and failed —
+        collapsing it to a bare `PageRef` would discard the x/y/w/h the caller
+        supplied.
         """
         return Rendition(locator=locator, content=TextContent(detail), degraded=True)
 
@@ -385,19 +396,21 @@ class PdfHandler:
         finally:
             document.close()
 
-    def _render_pil(self, page: pdfium.PdfPage, dpi: int):
+    def _render_pil(self, page: pdfium.PdfPage, dpi: int) -> Image.Image:
         """The page rendered as a PIL image, not yet encoded to bytes.
 
-        Returned rather than typed as `Image.Image`: this module must stay
-        importable with Pillow absent (`_PIL_AVAILABLE` is the runtime guard,
-        checked by name rather than imported), so it never names `PIL` at
-        module scope — `pdfium`'s own `to_pil()` is what actually touches
-        Pillow. `PIL` is confined to `handlers/image.py` and
-        `handlers/regions.py`; this module must not become a second home.
+        `Image.Image` is a type-checking-only name here (see the
+        `TYPE_CHECKING` import above, mirroring `regions.py`): this module
+        must stay importable with Pillow absent (`_PIL_AVAILABLE` is the
+        runtime guard, checked by name rather than imported), so it never
+        names `PIL` at runtime — `pdfium`'s own `to_pil()` is what actually
+        touches Pillow. `PIL` is confined to `handlers/image.py` and
+        `handlers/regions.py` at runtime; this module must not become a third
+        home.
         """
         bitmap = page.render(scale=dpi / 72)
         try:
-            return bitmap.to_pil()
+            return bitmap.to_pil()  # type: ignore[no-any-return]  # pypdfium2 ships no py.typed
         finally:
             bitmap.close()
 

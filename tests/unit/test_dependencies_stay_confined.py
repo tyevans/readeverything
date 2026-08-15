@@ -27,7 +27,10 @@ CONFINED: dict[str, set[str]] = {
     "langchain_openai": {"adapters/vision_langchain.py", "adapters/clip_langchain.py"},
     "puremagic": {"adapters/detection.py"},
     "charset_normalizer": {"handlers/text.py"},
-    "PIL": {"handlers/image.py", "handlers/regions.py"},
+    # pdf.py's PIL import is TYPE_CHECKING-only, annotating `_render_pil`'s
+    # return type: `pdfium`'s own `to_pil()` is what touches Pillow at
+    # runtime, and `_PIL_AVAILABLE` (checked by name) is the real guard.
+    "PIL": {"handlers/image.py", "handlers/regions.py", "handlers/pdf.py"},
     "faster_whisper": {"adapters/whisper_transcriber.py"},
     # pypdfium2 wraps Google's PDFium. Two homes: the probe adapter answers
     # cheap document facts, and the PDF handler extracts text — which is not a
