@@ -12,6 +12,7 @@ here.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 from typing import NewType
 
 from readeverything.domain.locator_map import LocatorMap
@@ -50,6 +51,22 @@ class Rendition:
     degraded: bool = False
 
 
+class CueSource(Enum):
+    """Where a cue's words came from.
+
+    `video.py` already refuses to let a citation attribute speech to a
+    picture — `SPEECH_MARKER` exists for exactly that. Captions are a third
+    kind of evidence and need the same care, because a caption is authored
+    text: frequently condensed for reading speed rather than verbatim, often
+    describing sound nobody spoke (`[music playing]` is the first cue in the
+    reference file), and sometimes translated. A reader deciding how far to
+    trust a quoted line needs to know which of these produced it.
+    """
+
+    SAID = "said"
+    CAPTIONED = "captioned"
+
+
 @dataclass(frozen=True, slots=True)
 class TranscriptCue:
     """One utterance, with a speaker when diarization is available."""
@@ -58,6 +75,11 @@ class TranscriptCue:
     text: str
     speaker: SpeakerId | None
     confidence: float | None
+    #: Defaults to SAID because every producer that predates this field is a
+    #: transcriber, and only the caption adapter sets CAPTIONED. A default of
+    #: CAPTIONED would mislabel every existing cue, which is the failure this
+    #: field exists to prevent.
+    source: CueSource = CueSource.SAID
 
 
 @dataclass(frozen=True, slots=True)

@@ -19,6 +19,7 @@ from readeverything.domain.locators import ByteRange, TimeSpan
 from readeverything.domain.observation import OperationProgressed
 from readeverything.domain.rendition import (
     Budget,
+    CueSource,
     ImageContent,
     Rendered,
     SpeakerId,
@@ -26,11 +27,13 @@ from readeverything.domain.rendition import (
     TranscriptCue,
 )
 from readeverything.handlers.video import (
+    CAPTION_MARKER,
     MOMENT_SEPARATOR,
     SPEECH_MARKER,
     DescribeFrameParams,
     FrameAtParams,
     VideoHandler,
+    _spoken,
 )
 from readeverything.ports.frames import FrameExtractor
 from readeverything.ports.streams import MediaFacts, StreamInfo, StreamProbe
@@ -1173,3 +1176,39 @@ class TestVideoHandlerCompliance(MediaHandlerCompliance):
     @pytest.fixture
     def content(self, sample_video: str) -> bytes:
         return Path(sample_video).read_bytes()
+
+
+def test_a_caption_is_rendered_as_a_caption_not_as_speech() -> None:
+    """A caption is authored text: condensed for reading speed, sometimes
+    translated, and used for sound nobody spoke. Marking it as speech asserts
+    someone said words they did not say — the same defect SPEECH_MARKER
+    already prevents between pictures and sentences."""
+    captioned = TranscriptCue(
+        span=TimeSpan(0.0, 2.0),
+        text="[music playing]",
+        speaker=None,
+        confidence=None,
+        source=CueSource.CAPTIONED,
+    )
+    line = _spoken(captioned)
+    assert line == f"{CAPTION_MARKER} [music playing]"
+    assert SPEECH_MARKER not in line
+
+
+def test_a_heard_cue_is_still_rendered_as_speech() -> None:
+    heard = TranscriptCue(span=TimeSpan(0.0, 2.0), text="hello", speaker=None, confidence=None)
+    assert _spoken(heard) == f"{SPEECH_MARKER} hello"
+
+
+def test_an_empty_cue_names_neither_producer_falsely() -> None:
+    """Both a transcriber and a caption track can legally produce an empty
+    string, and the placeholder must not claim a transcriber ran when a
+    caption file was what was read."""
+    empty = TranscriptCue(
+        span=TimeSpan(0.0, 1.0),
+        text="   ",
+        speaker=None,
+        confidence=None,
+        source=CueSource.CAPTIONED,
+    )
+    assert _spoken(empty) == f"{CAPTION_MARKER} (no text was produced for this cue)"

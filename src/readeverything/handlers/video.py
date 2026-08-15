@@ -52,6 +52,7 @@ from readeverything.domain.observation import (
 )
 from readeverything.domain.rendition import (
     Budget,
+    CueSource,
     Degradation,
     ImageContent,
     Rendered,
@@ -94,6 +95,12 @@ MOMENT_SEPARATOR = "\n"
 #: of evidence with different failure modes, and a citation that conflated them
 #: would attribute speech to a picture.
 SPEECH_MARKER = "(speech)"
+
+#: What marks an authored caption, as `SPEECH_MARKER` marks heard speech. A
+#: caption track is written, not heard: condensed for reading speed, sometimes
+#: translated, and used for sound nobody spoke. Rendering one as speech would
+#: assert that someone said words they did not say.
+CAPTION_MARKER = "(caption)"
 
 #: The mimetype handed to the transcriber. `AudioExtractor.extract` is
 #: specified to return mono 16kHz WAV bytes whatever the container was, so this
@@ -931,15 +938,23 @@ def _merge(
 
 
 def _spoken(cue: TranscriptCue) -> str:
-    """One cue as a line of the merged timeline, marked as speech."""
+    """One cue as a line of the merged timeline, marked by where it came from.
+
+    Two markers rather than one because the difference is a difference in
+    evidence, not in formatting: a caption was written by a person who could
+    hear the audio and may have condensed, translated, or described a sound
+    nobody spoke, while a transcript cue is a model's report of what it heard.
+    A reader weighing a quotation needs to know which it has.
+    """
+    marker = SPEECH_MARKER if cue.source is CueSource.SAID else CAPTION_MARKER
     speaker = f"{cue.speaker} " if cue.speaker is not None else ""
     body = " ".join(cue.text.split())
     if not body:
-        # `TranscriptCue.text` is a `str`, so a transcriber emitting an empty
-        # one is a legal implementation. It must not reach an index as though
-        # something had been heard.
-        return f"{SPEECH_MARKER} (the transcriber returned no text for this cue)"
-    return f"{SPEECH_MARKER} {speaker}{body}"
+        # `TranscriptCue.text` is a `str`, so a producer emitting an empty one
+        # is a legal implementation. It must not reach an index as though
+        # something had been heard or read.
+        return f"{marker} (no text was produced for this cue)"
+    return f"{marker} {speaker}{body}"
 
 
 def _listed(times: list[float], limit: int = 10) -> str:

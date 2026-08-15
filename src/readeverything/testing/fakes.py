@@ -10,12 +10,13 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
+from dataclasses import replace
 
 from readeverything.domain.capability import Capability
 from readeverything.domain.errors import InfrastructureError
 from readeverything.domain.locators import TimeSpan
 from readeverything.domain.observation import Event
-from readeverything.domain.rendition import SpeakerId, TranscriptCue
+from readeverything.domain.rendition import CueSource, SpeakerId, TranscriptCue
 
 
 class FakeSource:
@@ -132,6 +133,46 @@ class FakeTranscriber:
             start += _FAKE_CUE_S + _FAKE_GAP_S  # silence between cues
             index += 1
         return tuple(cues)
+
+
+class FakeCaptions:
+    """A `CaptionExtractor` returning cues it was handed, or `None`.
+
+    `None` is the port's "this file has no text caption track" answer, and it
+    is the case a precedence rule has to get right, so it is a constructor
+    argument rather than something a test has to subclass around. Every cue is
+    marked CAPTIONED — a fake that produced SAID cues would let a handler pass
+    the very test that checks it distinguishes the two.
+    """
+
+    def __init__(self, *, cues: tuple[TranscriptCue, ...] | None = ()) -> None:
+        self._cues = (
+            None
+            if cues is None
+            else tuple(replace(cue, source=CueSource.CAPTIONED) for cue in cues)
+        )
+        #: What it was asked for, so a test can assert WHICH track was read.
+        self.calls: list[tuple[str, int | None]] = []
+
+    async def extract(
+        self, path: str, track: int | None = None
+    ) -> tuple[TranscriptCue, ...] | None:
+        self.calls.append((path, track))
+        return self._cues
+
+
+class RaisingCaptions:
+    """A caption extractor that raises, to prove the handler falls back.
+
+    `CaptionExtractor.extract` is specified never to raise, but it is an
+    injected implementation and the handler's contract is that it never raises
+    about its input — so the guard has to be tested, not assumed.
+    """
+
+    async def extract(
+        self, path: str, track: int | None = None
+    ) -> tuple[TranscriptCue, ...] | None:
+        raise RuntimeError("ffmpeg exploded")
 
 
 class FakeDiarizer:
