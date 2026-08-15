@@ -22,9 +22,19 @@ async def test_the_same_directory_offers_less_without_a_vision_model(media_root:
 
 
 async def test_nothing_unavailable_is_ever_offered(media_root: Path) -> None:
-    """The design goal, asserted directly: an agent never sees a tool it cannot use."""
+    """The design goal, asserted directly: an agent never sees a tool it cannot use.
+
+    Counts every affordance actually checked and asserts the count is non-zero.
+    Without that count, a regression to "the registry offers nothing" would make
+    the loop body never execute -- the assertion inside it would never fail, and
+    this test would pass while announcing a guarantee about a system that
+    offers nothing at all.
+    """
     perception = await build_perception(media_root, probe_binaries=False)
     capabilities = perception.registry.capabilities
+    checked = 0
     for uri in await perception.list("."):
         for affordance in (await perception.inspect(uri)).affordances:
             assert affordance.is_available(capabilities)
+            checked += 1
+    assert checked > 0
