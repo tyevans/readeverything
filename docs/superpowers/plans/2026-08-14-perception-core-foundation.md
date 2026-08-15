@@ -3962,7 +3962,11 @@ def never_raises[**P](
     async def wrapper(*args: P.args, **kwargs: P.kwargs) -> ToolResult:
         try:
             return ToolResult(ok=True, value=await fn(*args, **kwargs), error=None, error_type=None)
-        except Exception as exc:  # noqa: BLE001 - the whole point of this decorator
+        # Catching broadly is the whole point of this decorator: an adapter bug
+        # is exactly as unhelpful to a model as an expected failure. Note this
+        # deliberately does not catch BaseException, so CancelledError still
+        # propagates and task cancellation keeps working.
+        except Exception as exc:
             return ToolResult(
                 ok=False, value=None, error=str(exc), error_type=type(exc).__name__
             )
