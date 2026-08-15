@@ -12,3 +12,6 @@ wheels/
 
 # Test media. Large binaries, and not ours to redistribute.
 media/
+
+# Model weights. Large binaries, fetched on demand.
+models/

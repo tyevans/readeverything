@@ -10,6 +10,7 @@ the transcript-first spec came from here.
 import asyncio
 import sys
 import time
+from pathlib import Path
 
 from deepagents import create_deep_agent
 from langchain_core.messages import HumanMessage
@@ -25,6 +26,7 @@ from readeverything import (
 
 BASE_URL = "http://192.168.1.14:8080/v1/"
 MODEL = "qwen3.8-27b-mtp"
+WHISPER_DIR = "models/faster-whisper-small"
 QUESTION = sys.argv[1] if len(sys.argv) > 1 else "What is mystery_subject.mp4 about?"
 
 
@@ -49,9 +51,20 @@ async def main() -> None:
         max_tokens=1500,  # reasoning eats the budget before answering below ~1k
         timeout_s=300.0,
     )
+    # Wired only if the weights are present. They are a large download the
+    # project does not make on its own, so a machine without them still runs
+    # this harness — it just falls back to frames on a caption-less file.
+    transcriber = None
+    if Path(WHISPER_DIR).is_dir():
+        from readeverything import WhisperTranscriber
+
+        transcriber = WhisperTranscriber(model_dir=WHISPER_DIR)
+        print(f"transcriber: {transcriber.model_id}", flush=True)
+
     perception = await build_perception(
         "media",
         vision=vision,
+        transcriber=transcriber,
         observer=Narrate(),
         limiter=SemaphoreLimiter({Capability.VISION: 3}),
     )

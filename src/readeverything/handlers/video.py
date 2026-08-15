@@ -234,7 +234,7 @@ class VideoHandler:
                 level=DetailLevel.SEGMENT,
             )
         ]
-        if self._captions is not None:
+        if self._captions is not None or self._transcriber is not None:
             # Offered whenever an extractor is wired, without probing for a
             # track first: `affordances()` is synchronous and cheap by
             # contract, and reading the container to decide would make listing
@@ -251,10 +251,10 @@ class VideoHandler:
                 Affordance(
                     name="read_transcript",
                     description=(
-                        "Read what is said during a window of the timeline, from the "
-                        "container's own caption track. Costs no model call and is the "
-                        "cheapest way to learn what a video is about — try this before "
-                        "describing frames."
+                        "Read what is said during a window of the timeline — from the "
+                        "container's own caption track when it has one, otherwise by "
+                        "transcribing its audio. Almost always the cheapest way to learn "
+                        "what a video is about; try this before describing frames."
                     ),
                     params=ReadTranscriptParams,
                     requires=frozenset({Capability.FFMPEG}),
@@ -283,7 +283,7 @@ class VideoHandler:
                     raise TypeError(f"expected FrameAtParams, got {type(params).__name__}")
                 return await self._frame_at(ref, params.seconds)
             case "read_transcript":
-                if self._captions is None:
+                if self._captions is None and self._transcriber is None:
                     raise UnknownAffordanceError(name, (a.name for a in self.affordances()))
                 if not isinstance(params, ReadTranscriptParams):
                     raise TypeError(f"expected ReadTranscriptParams, got {type(params).__name__}")
@@ -314,14 +314,23 @@ class VideoHandler:
         try:
             path = await self._source.local_path(ref.uri)
         except Exception:
-            return self._degraded_read(ref, "this video has no local path to read captions from")
+            return self._degraded_read(ref, "this video has no local path to read words from")
         try:
             facts = await self._probe.probe(path)
         except Exception as exc:
             return self._degraded_read(ref, f"the video could not be probed ({exc})")
-        cues, _ = await self._captioned_cues(path, facts)
+        # The SAME precedence `represent()` uses, deliberately: the container's
+        # captions when it has them, ASR when it does not. An earlier version
+        # read captions only, and on a caption-less file it told an agent
+        # holding a working transcriber that there were no words — the second
+        # time in this feature that words existed and nothing could reach them.
+        cues, _ = await self._cues(path, facts)
         if not cues:
-            return self._degraded_read(ref, "this video carries no readable caption track")
+            return self._degraded_read(
+                ref,
+                "no words could be read from this video: it carries no readable caption "
+                "track, and none could be transcribed from its audio",
+            )
         limit = facts.duration_s if end_s is None else end_s
         window = tuple(c for c in cues if c.span.start_s < limit and c.span.end_s > start_s)
         if not window:

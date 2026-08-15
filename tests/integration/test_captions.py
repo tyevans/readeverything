@@ -15,6 +15,7 @@ import pytest
 
 from readeverything import Budget, build_perception
 from readeverything.handlers.video import CAPTION_MARKER, SPEECH_MARKER
+from readeverything.testing.fakes import FakeTranscriber
 
 SRT = """1
 00:00:00,500 --> 00:00:02,000
@@ -138,4 +139,68 @@ async def test_a_file_without_captions_says_so_rather_than_failing(tmp_path: Pat
     perception = await build_perception(tmp_path)
     result = await perception.invoke(out.name, "read_transcript", {})
     assert result.degraded is True
-    assert "no readable caption track" in result.content.text
+    assert "no readable caption" in result.content.text
+
+
+async def test_read_transcript_falls_back_to_asr_when_there_are_no_captions(
+    tmp_path: Path,
+) -> None:
+    """The second time in this feature that words existed and nothing could
+    reach them. `read_transcript` read captions only, so on a caption-less
+    file it told an agent holding a working transcriber that there were no
+    words to read — and the agent went back to sampling frames.
+
+    It now uses the same precedence `represent()` does.
+    """
+    out = tmp_path / "spoken.mp4"
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc=size=64x48:rate=5:duration=3",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:duration=3",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            str(out),
+        ],
+        check=True,
+    )
+    perception = await build_perception(tmp_path, transcriber=FakeTranscriber(duration_s=3.0))
+    result = await perception.invoke(out.name, "read_transcript", {})
+    assert result.degraded is False
+    assert "cue 0" in result.content.text
+
+
+async def test_read_transcript_is_offered_with_only_a_transcriber(tmp_path: Path) -> None:
+    out = tmp_path / "any.mp4"
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc=size=64x48:rate=5:duration=1",
+            "-pix_fmt",
+            "yuv420p",
+            str(out),
+        ],
+        check=True,
+    )
+    perception = await build_perception(tmp_path, transcriber=FakeTranscriber(duration_s=1.0))
+    card = await perception.inspect(out.name)
+    assert "read_transcript" in {a.name for a in card.affordances}
