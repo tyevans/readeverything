@@ -3,9 +3,14 @@ from tests.fixtures_pdf import blank, born_digital, many_pages, scanned_like
 
 from readeverything.adapters.pdfium_probe import PdfiumProbe
 from readeverything.domain.identity import ContentHash, MimeType, SourceRef
-from readeverything.domain.locators import CharSpan, PageRef
-from readeverything.domain.rendition import Budget
-from readeverything.handlers.pdf import PdfHandler
+from readeverything.domain.locators import BBox, CharSpan, PageRef
+from readeverything.domain.rendition import Budget, ImageContent
+from readeverything.handlers.pdf import (
+    PageImageParams,
+    PageRegionParams,
+    PdfHandler,
+    ReadPageParams,
+)
 from readeverything.testing.fakes import FakeSource
 from readeverything.testing.handler_compliance import MediaHandlerCompliance
 
@@ -76,7 +81,7 @@ async def test_a_chunk_spanning_a_page_break_cites_both_pages() -> None:
 async def test_the_card_reports_the_page_count_without_extracting_text() -> None:
     handler = _handler(many_pages(12))
     card = await handler.describe(_ref())
-    assert card.facts["page_count"] == "12"
+    assert card.facts["page_count"] == 12
     assert "This is page" not in (card.excerpt or "")
 
 
@@ -89,7 +94,7 @@ async def test_the_card_is_a_pdf_by_its_mime_and_facts_not_by_a_new_media_kind()
     """
     card = await _handler(born_digital(["Alpha."])).describe(_ref())
     assert str(card.ref.mime) == "application/pdf"
-    assert card.facts["page_count"] == "1"
+    assert card.facts["page_count"] == 1
     assert card.facts["readable"] == "yes"
 
 
@@ -189,6 +194,62 @@ async def test_a_page_that_extracts_nothing_still_owns_a_character() -> None:
     rendered = await _handler(blank(3)).represent(_ref(), Budget(max_chars=None))
     assert len(rendered.locator_map.segments) == 3
     assert rendered.locator_map.resolve(len(rendered.text) - 1) == PageRef(3)
+
+
+async def test_read_page_returns_that_page_located_at_that_page() -> None:
+    handler = _handler(born_digital(["Alpha.", "Bravo.", "Charlie."]))
+    rendition = await handler.invoke(_ref(), "read_page", ReadPageParams(page=2))
+    assert "Bravo" in rendition.content.text
+    assert rendition.locator == PageRef(2)
+
+
+async def test_asking_for_a_page_past_the_end_degrades_rather_than_raising() -> None:
+    """The handler never raises. An agent that guesses a page number gets a
+    result it can read and correct, not an exception."""
+    handler = _handler(born_digital(["Only page."]))
+    rendition = await handler.invoke(_ref(), "read_page", ReadPageParams(page=99))
+    assert rendition.degraded
+
+
+async def test_page_region_bbox_uses_a_top_left_origin() -> None:
+    """PDF points are bottom-left origin; BBox is top-left, as used by the
+    image handler's crop. A missing flip yields upside-down citations that
+    every test passes unless one asserts a known glyph's position.
+
+    The fixture draws its text near the TOP of the page, so the top half must
+    contain it and the bottom half must not.
+    """
+    handler = _handler(born_digital(["Alpha at the top."]))
+
+    top = await handler.invoke(
+        _ref(), "page_region", PageRegionParams(page=1, x=0.0, y=0.0, w=1.0, h=0.5)
+    )
+    bottom = await handler.invoke(
+        _ref(), "page_region", PageRegionParams(page=1, x=0.0, y=0.5, w=1.0, h=0.5)
+    )
+    assert "Alpha" in top.content.text
+    assert "Alpha" not in bottom.content.text
+
+
+async def test_page_region_returns_a_bbox_carrying_its_page() -> None:
+    """`BBox.page` has never been anything but None. This is its first real
+    value."""
+    handler = _handler(born_digital(["Alpha.", "Bravo."]))
+    rendition = await handler.invoke(
+        _ref(), "page_region", PageRegionParams(page=2, x=0.0, y=0.0, w=1.0, h=1.0)
+    )
+    assert isinstance(rendition.locator, BBox)
+    assert rendition.locator.page == 2
+
+
+async def test_page_image_returns_image_content_a_vision_tool_can_read() -> None:
+    """A diagram on page 12 becomes describable through the existing tool pack
+    without this handler knowing anything about vision."""
+    handler = _handler(born_digital(["Alpha."]))
+    rendition = await handler.invoke(_ref(), "page_image", PageImageParams(page=1, dpi=72))
+    assert isinstance(rendition.content, ImageContent)
+    assert rendition.content.mime == "image/png"
+    assert rendition.content.data.startswith(b"\x89PNG")
 
 
 class TestPdfHandlerCompliance(MediaHandlerCompliance):

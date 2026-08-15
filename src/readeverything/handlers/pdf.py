@@ -17,6 +17,7 @@ into an adapter.
 
 from __future__ import annotations
 
+import io
 from enum import Enum
 from typing import ClassVar
 
@@ -29,18 +30,32 @@ except ImportError as exc:  # pragma: no cover - exercised via a patched sys.mod
         "The composition root omits PDF handling when pypdfium2 is absent, so "
         "reaching this means the handler was imported directly."
     ) from exc
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from readeverything.domain.affordance import Affordance
+from readeverything.domain.affordance import Affordance, DetailLevel
 from readeverything.domain.capability import Capability
 from readeverything.domain.card import Card, Segment
 from readeverything.domain.errors import UnknownAffordanceError
 from readeverything.domain.identity import MediaKind, SourceRef
 from readeverything.domain.locator_map import LocatorMap, LocatorSegment
-from readeverything.domain.locators import ByteRange, CharSpan, PageRef
-from readeverything.domain.rendition import Budget, Degradation, Rendered, Rendition
+from readeverything.domain.locators import BBox, ByteRange, CharSpan, PageRef
+from readeverything.domain.rendition import (
+    Budget,
+    Degradation,
+    ImageContent,
+    Rendered,
+    Rendition,
+    TextContent,
+)
 from readeverything.ports.probe_media import MediaProbe
 from readeverything.ports.source import SourceReader
+
+try:
+    import PIL  # noqa: F401  # presence check only; page_image degrades without it
+except ImportError:  # pragma: no cover - exercised via a patched sys.modules
+    _PIL_AVAILABLE = False
+else:
+    _PIL_AVAILABLE = True
 
 #: Every page's text ends with this, and the page's `LocatorSegment` INCLUDES
 #: it. `LocatorMap` demands total, gapless, zero-start coverage and
@@ -100,6 +115,23 @@ def _placeholder(state: _PageState, number: int) -> str:
     return f"(page {number} is blank)"
 
 
+class ReadPageParams(BaseModel):
+    page: int = Field(default=1, ge=1, description="1-indexed page number to read.")
+
+
+class PageRegionParams(BaseModel):
+    page: int = Field(default=1, ge=1, description="1-indexed page number.")
+    x: float = Field(default=0.0, ge=0.0, le=1.0, description="Left edge, 0-1 of page width.")
+    y: float = Field(default=0.0, ge=0.0, le=1.0, description="Top edge, 0-1 of page height.")
+    w: float = Field(default=1.0, gt=0.0, le=1.0, description="Width, 0-1 of page width.")
+    h: float = Field(default=1.0, gt=0.0, le=1.0, description="Height, 0-1 of page height.")
+
+
+class PageImageParams(BaseModel):
+    page: int = Field(default=1, ge=1, description="1-indexed page number to render.")
+    dpi: int = Field(default=150, gt=0, description="Render resolution, in dots per inch.")
+
+
 def _listed(numbers: list[int], limit: int = 10) -> str:
     head = ", ".join(str(number) for number in numbers[:limit])
     if len(numbers) <= limit:
@@ -134,7 +166,33 @@ class PdfHandler:
         return frozenset()
 
     def affordances(self) -> tuple[Affordance, ...]:
-        return ()
+        affordances: list[Affordance] = [
+            Affordance(
+                name="read_page",
+                description="Return the text of one page.",
+                params=ReadPageParams,
+                requires=frozenset(),
+                level=DetailLevel.SEGMENT,
+            ),
+            Affordance(
+                name="page_region",
+                description=(
+                    "Return the text inside a rectangular region of a page. "
+                    "Coordinates are fractions of the page, 0 to 1, top-left origin."
+                ),
+                params=PageRegionParams,
+                requires=frozenset(),
+                level=DetailLevel.SEGMENT,
+            ),
+            Affordance(
+                name="page_image",
+                description="Render a page as a PNG image, for a vision tool to read.",
+                params=PageImageParams,
+                requires=frozenset(),
+                level=DetailLevel.SEGMENT,
+            ),
+        ]
+        return tuple(affordances)
 
     def _open(self, data: bytes) -> pdfium.PdfDocument | None:
         """The opened document, or None if these bytes are not a readable PDF.
@@ -173,7 +231,7 @@ class PdfHandler:
             kind=MediaKind.BINARY,
             facts={
                 "readable": "yes",
-                "page_count": str(facts.page_count),
+                "page_count": facts.page_count,
                 "first_page_points": f"{width:g}x{height:g}",
                 "size_bytes": ref.size_bytes,
                 **{f"meta.{k}": v for k, v in sorted(facts.metadata.items())},
@@ -187,7 +245,114 @@ class PdfHandler:
         )
 
     async def invoke(self, ref: SourceRef, name: str, params: BaseModel) -> Rendition:
-        raise UnknownAffordanceError(name, (a.name for a in self.affordances()))
+        match name:
+            case "read_page":
+                if not isinstance(params, ReadPageParams):
+                    raise TypeError(f"expected ReadPageParams, got {type(params).__name__}")
+                return await self._read_page(ref, params.page)
+            case "page_region":
+                if not isinstance(params, PageRegionParams):
+                    raise TypeError(f"expected PageRegionParams, got {type(params).__name__}")
+                return await self._page_region(ref, params)
+            case "page_image":
+                if not isinstance(params, PageImageParams):
+                    raise TypeError(f"expected PageImageParams, got {type(params).__name__}")
+                return await self._page_image(ref, params.page, params.dpi)
+            case _:
+                raise UnknownAffordanceError(name, (a.name for a in self.affordances()))
+
+    def _degraded_text(self, locator: PageRef | ByteRange, detail: str) -> Rendition:
+        """What every out-of-range or missing-page request returns.
+
+        Never an exception: an agent guessing a page number gets a result it
+        can read and correct.
+        """
+        return Rendition(locator=locator, content=TextContent(detail), degraded=True)
+
+    async def _read_page(self, ref: SourceRef, number: int) -> Rendition:
+        data = await self._source.read_bytes(ref.uri)
+        document = self._open(data)
+        if document is None:
+            return self._degraded_text(
+                ByteRange(0, max(1, ref.size_bytes)), f"{ref.uri} could not be opened as a PDF"
+            )
+        try:
+            if number > len(document):
+                return self._degraded_text(
+                    ByteRange(0, max(1, ref.size_bytes)),
+                    f"page {number} does not exist; the document has {len(document)} page(s)",
+                )
+            page = document[number - 1]
+            text = _page_text(page)
+            state = _page_state(page, text)
+            body = text if state is _PageState.EXTRACTED else _placeholder(state, number)
+            return Rendition(locator=PageRef(number), content=TextContent(body))
+        finally:
+            document.close()
+
+    async def _page_region(self, ref: SourceRef, params: PageRegionParams) -> Rendition:
+        data = await self._source.read_bytes(ref.uri)
+        document = self._open(data)
+        if document is None:
+            return self._degraded_text(
+                ByteRange(0, max(1, ref.size_bytes)), f"{ref.uri} could not be opened as a PDF"
+            )
+        try:
+            if params.page > len(document):
+                return self._degraded_text(
+                    ByteRange(0, max(1, ref.size_bytes)),
+                    f"page {params.page} does not exist; the document has {len(document)} page(s)",
+                )
+            page = document[params.page - 1]
+            width, height = page.get_size()
+            # PDF points are bottom-left origin; `BBox` is top-left, as used by
+            # `ImageHandler`'s crop. `BBox.y=0` means the TOP of the page.
+            left = params.x * width
+            right = (params.x + params.w) * width
+            top = (1.0 - params.y) * height
+            bottom = (1.0 - (params.y + params.h)) * height
+            textpage = page.get_textpage()
+            try:
+                text = str(textpage.get_text_bounded(left, bottom, right, top))
+            finally:
+                textpage.close()
+            locator = BBox(page=params.page, x=params.x, y=params.y, w=params.w, h=params.h)
+            return Rendition(locator=locator, content=TextContent(text))
+        finally:
+            document.close()
+
+    async def _page_image(self, ref: SourceRef, number: int, dpi: int) -> Rendition:
+        data = await self._source.read_bytes(ref.uri)
+        document = self._open(data)
+        if document is None:
+            return self._degraded_text(
+                ByteRange(0, max(1, ref.size_bytes)), f"{ref.uri} could not be opened as a PDF"
+            )
+        try:
+            if number > len(document):
+                return self._degraded_text(
+                    ByteRange(0, max(1, ref.size_bytes)),
+                    f"page {number} does not exist; the document has {len(document)} page(s)",
+                )
+            if not _PIL_AVAILABLE:
+                return self._degraded_text(
+                    PageRef(number),
+                    "page could not be rendered: Pillow is not installed",
+                )
+            page = document[number - 1]
+            bitmap = page.render(scale=dpi / 72)
+            try:
+                pil_image = bitmap.to_pil()
+            finally:
+                bitmap.close()
+            buffer = io.BytesIO()
+            pil_image.save(buffer, format="PNG")
+            return Rendition(
+                locator=PageRef(number),
+                content=ImageContent(data=buffer.getvalue(), mime="image/png"),
+            )
+        finally:
+            document.close()
 
     async def represent(self, ref: SourceRef, budget: Budget) -> Rendered:
         data = await self._source.read_bytes(ref.uri)
