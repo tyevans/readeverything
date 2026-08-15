@@ -1,4 +1,6 @@
+from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -8,12 +10,56 @@ from readeverything.adapters.hashing import ContentHasher
 from readeverything.adapters.local_source import LocalFileSource
 from readeverything.agent.tools import _render_rendition, build_tools
 from readeverything.domain.capability import CapabilitySet
+from readeverything.domain.card import Card
+from readeverything.domain.errors import UnknownAffordanceError
 from readeverything.domain.locators import BBox
-from readeverything.domain.rendition import ImageContent, Rendition
+from readeverything.domain.rendition import ImageContent, Rendition, TextContent
 from readeverything.handlers.binary import BinaryHandler
 from readeverything.handlers.text import TextHandler
 from readeverything.pipeline.perception import Perception
 from readeverything.registry.registry import MimeTypeRegistry
+
+
+def _by_name(tools: list[Any], name: str) -> Any:
+    return next(t for t in tools if t.name == name)
+
+
+class RecordingPerception:
+    """A fake `Perception` that records what it was asked to invoke/inspect."""
+
+    def __init__(self) -> None:
+        self.invoked: tuple[str, str, dict[str, Any]] | None = None
+        self.inspected: list[str] = []
+
+    async def inspect(self, uri: str) -> Card:
+        self.inspected.append(uri)
+        raise AssertionError("inspect should not be called by ask_about_image")
+
+    async def list(self, uri: str = ".") -> list[str]:
+        raise NotImplementedError
+
+    async def invoke(self, uri: str, name: str, params: Mapping[str, Any]) -> Rendition:
+        self.invoked = (uri, name, dict(params))
+        return Rendition(
+            locator=BBox(page=None, x=0.0, y=0.0, w=1.0, h=1.0),
+            content=TextContent(text="the answer"),
+        )
+
+
+class RaisingPerception:
+    """A fake `Perception` whose `invoke` always raises a given error."""
+
+    def __init__(self, error: Exception) -> None:
+        self._error = error
+
+    async def inspect(self, uri: str) -> Card:
+        raise NotImplementedError
+
+    async def list(self, uri: str = ".") -> list[str]:
+        raise NotImplementedError
+
+    async def invoke(self, uri: str, name: str, params: Mapping[str, Any]) -> Rendition:
+        raise self._error
 
 
 @pytest.fixture
@@ -32,9 +78,9 @@ def perception(tmp_path: Path) -> Perception:
     )
 
 
-def test_the_pack_offers_the_three_core_tools(perception: Perception) -> None:
+def test_the_pack_offers_the_four_core_tools(perception: Perception) -> None:
     names = {tool.name for tool in build_tools(perception)}
-    assert {"inspect_path", "list_paths", "invoke_affordance"} <= names
+    assert {"inspect_path", "list_paths", "invoke_affordance", "ask_about_image"} <= names
 
 
 def test_every_tool_has_a_description(perception: Perception) -> None:
@@ -85,7 +131,7 @@ async def test_a_missing_required_argument_returns_an_error_string(
 
 
 def test_image_content_names_an_affordance_that_exists() -> None:
-    """The pack has three tools and none of them is a vision tool.
+    """Neither `describe_image` nor `ocr` is a tool name.
 
     The old text told the model to "pass to a vision tool to read it". There is
     no vision tool. Instructing a model toward a tool that does not exist is
@@ -121,3 +167,47 @@ async def test_a_wrongly_typed_argument_returns_an_error_string(
         {"uri": "notes.txt", "affordance": "read_range", "params": "not-a-dict"}
     )
     assert "ERROR" in output
+
+
+@pytest.mark.asyncio
+async def test_ask_about_image_forwards_question_and_where_together():
+    perception = RecordingPerception()
+    tool = _by_name(build_tools(perception), "ask_about_image")
+    await tool.ainvoke({"uri": "a.png", "question": "How many?", "where": {"x": 0.5, "w": 0.5}})
+    assert perception.invoked == (
+        "a.png",
+        "ask_about_image",
+        {"x": 0.5, "w": 0.5, "question": "How many?"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_ask_about_image_needs_no_where():
+    perception = RecordingPerception()
+    tool = _by_name(build_tools(perception), "ask_about_image")
+    await tool.ainvoke({"uri": "a.png", "question": "What is this?"})
+    assert perception.invoked[2] == {"question": "What is this?"}
+
+
+@pytest.mark.asyncio
+async def test_ask_about_image_never_inspects_the_file():
+    """The tool layer knows nothing about kinds — an inspect call here would
+    mean it had started making decisions it must not make."""
+    perception = RecordingPerception()
+    tool = _by_name(build_tools(perception), "ask_about_image")
+    await tool.ainvoke({"uri": "a.png", "question": "q"})
+    assert perception.inspected == []
+
+
+@pytest.mark.asyncio
+async def test_a_file_without_the_affordance_lists_what_it_does_have():
+    perception = RaisingPerception(UnknownAffordanceError("ask_about_image", ["read_range"]))
+    tool = _by_name(build_tools(perception), "ask_about_image")
+    result = await tool.ainvoke({"uri": "a.txt", "question": "q"})
+    assert "read_range" in result
+
+
+def test_the_tool_list_is_the_same_length_for_every_file():
+    """The docstring's rule: the tool list never varies with what was last
+    looked at. Four tools, always."""
+    assert len(build_tools(RecordingPerception())) == 4
