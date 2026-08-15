@@ -22,6 +22,14 @@ from dataclasses import replace
 from readeverything.domain.locators import TimeSpan
 from readeverything.domain.rendition import TranscriptCue
 
+#: Spacing used to keep forced starts strictly increasing once `duration_s`
+#: itself has been reached. Real spans use `min_width_s` for this; once a
+#: start has already been pinned to `duration_s`, spacing subsequent starts
+#: by the full `min_width_s` again would let the overshoot compound once per
+#: extra entry. This is small enough never to be mistaken for real width by
+#: any caller, while still satisfying `TimeSpan`'s `start < end`.
+_OVERFLOW_EPSILON_S = 1e-9
+
 
 def tile(
     starts: Iterable[float], *, duration_s: float, min_width_s: float
@@ -46,13 +54,39 @@ def tile(
     timestamp, a frame sample and a cue may legally coincide, and a rounded
     duration may legally land at or below the final entry's start.
 
+    GUARANTEE: no returned end may exceed `duration_s + min_width_s`. A start
+    is never pushed past `duration_s` while there is still room before it; once
+    `duration_s` is reached, later starts are forced apart by a float epsilon
+    rather than `min_width_s` again, so the forcing loop cannot compound the
+    overshoot once per extra entry the way it previously could (an unbounded
+    overshoot was the defect this guarantee replaces). The bounded overshoot
+    itself is unavoidable: `TimeSpan` forbids zero-width spans, so when
+    `min_width_s` alone is larger than `duration_s`, or entries are packed
+    tighter than `min_width_s` apart, something must give, and it is at most
+    one `min_width_s` of claimed time past the file's actual duration — never
+    more, regardless of how many entries are given.
+
+    The number of returned bounds always equals the number of `starts` given:
+    callers zip the two together, so dropping entries would desynchronize
+    bounds from the text they are meant to locate.
+
     No explicit "(silence)" or "(nothing sampled)" entry is emitted for a gap.
     That would need a detection pass with thresholds and false positives, and
     would put text in an index describing something nothing measured.
     """
     forced: list[float] = []
     for index, start in enumerate(starts):
-        forced.append(0.0 if index == 0 else max(start, forced[-1] + min_width_s))
+        if index == 0:
+            candidate = 0.0
+        else:
+            previous = forced[-1]
+            if previous < duration_s:
+                candidate = min(max(start, previous + min_width_s), duration_s)
+                if candidate <= previous:
+                    candidate = previous + _OVERFLOW_EPSILON_S
+            else:
+                candidate = previous + _OVERFLOW_EPSILON_S
+        forced.append(candidate)
     bounds: list[tuple[float, float]] = []
     for index, start in enumerate(forced):
         if index + 1 < len(forced):
