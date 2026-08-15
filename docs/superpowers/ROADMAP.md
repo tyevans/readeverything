@@ -16,14 +16,15 @@ observable, with strong DDD and SOLID vision, built from real user stories.
 | 1. Perception core | Plan 1 | — | 150 tests |
 | 1 (vision half) | Plan 2 | `618d1a2` | 230 tests, image family, live model |
 | 3. Integration & first product | Plan 3 | `60ed781` | 335 tests, 94.69%, composition root, cache wired, capability discovery, integration tier, README |
-| 4. The document family | Plan 4 | pending | 381 tests, 94.16%. PDF via pypdfium2. First honest producers of `PageRef`, `BBox`-on-a-page, and `Rendered.barriers` |
+| 4. The document family | Plan 4 | `d4f564b` | 381 tests, 94.16%. PDF via pypdfium2. First honest producers of `PageRef`, `BBox`-on-a-page, and `Rendered.barriers` |
+| 5. The moving image | Plan 5 | `da4d0e6` | 453 tests, 92.57%. Video via ffmpeg. `TimeSpan` gets its producer — **every locator type is now real**. `BinaryProbe` fixed |
 
 ## The two tracks, and why this order
 
 The destination needs both:
 
-- **"any file"** — media handlers. Today: text, images, binary fallback. No
-  audio, video, PDF, office, or archives.
+- **"any file"** — media handlers. Today: text, images, PDF, video, binary
+  fallback. Still missing: audio, office documents, archives.
 - **"ask a question, get real answers"** — the query layer: chunk `Rendered`,
   index it, retrieve, and answer with citations that resolve to exact source
   locations.
@@ -44,26 +45,39 @@ recorded audio, video) are exactly the ones missing.
 scanned-versus-blank distinction (they are identical through the text layer;
 `page.get_objects()` is what tells them apart).
 
-**Cycle 5 — the time-based family (audio, video).**
-Ports: `AudioExtractor`, `FrameExtractor`, `Transcriber`, `Diarizer`. `TimeSpan`
-already exists as a locator and has never had a producer. ffmpeg becomes the
-first real `BinaryProbe` consumer, which finally exercises capability
-negotiation against a genuine OS dependency.
+**Cycle 5 — the moving image.** ✅ **Done.** `StreamProbe`, `FrameExtractor`,
+`VideoHandler`, barriers at scene cuts, and the `BinaryProbe` fix. Split from
+its original scope: transcription moved to Cycle 6 because the model server's
+support for timestamped transcription is unverified and designing an honest
+degradation for that deserves its own cycle.
 
-**Cycle 6 — observability and concurrency.**
+**Cycle 6 — the spoken word (audio and transcription).**
+Ports: `AudioExtractor`, `Transcriber`. Audio is the last common media family
+with no handler, and a recorded meeting is the file people most want to ask
+questions of. Open question this cycle must settle by testing rather than
+assuming: does the model server at `192.168.1.14:8080` implement
+`/v1/audio/transcriptions` with `verbose_json` and `timestamp_granularities`?
+If not, transcription degrades to one untimed block — which must be reported,
+not silently produced. `faster-whisper` (MIT, word timestamps, needs an explicit
+local model path since the library downloads nothing implicitly) is the offline
+alternative. Diarization stays out: research recommends sherpa-onnx (Apache-2.0,
+ONNX, CPU, no gated weights) over pyannote (gated Hugging Face weights, pulls
+torch), which flips Spec 1 §7's default and is its own decision.
+
+**Cycle 7 — observability and concurrency.**
 Carried from Plan 3's findings: the library has NO logging, tracing, or metrics
 anywhere in `src/`, and nothing runs concurrent work. A whole-tree index and
 ffmpeg-driven extraction both need concurrency; debugging either needs
 observability. Per-capability semaphores were deferred from Spec 1 §14b on the
 grounds that nothing did concurrent expensive work — Cycle 5 ends that.
 
-**Cycle 7 — the query layer.**
+**Cycle 8 — the query layer.**
 `ask(path, question) -> sourced answer`. Chunking `Rendered` into retrievable
 units that keep provenance, retrieval, and citations that resolve through
 `LocatorMap` back to exact file locations. Depends on the redstring decision
 (see Open questions).
 
-**Cycle 8+ — re-evaluate.** Candidates: office documents, archives, incremental
+**Cycle 9+ — re-evaluate.** Candidates: office documents, archives, incremental
 re-indexing of changed trees, a whole-tree `ask`, richer agent tooling.
 
 ## Owed, discovered during Cycle 4
@@ -85,7 +99,7 @@ sequential calls for a four-hundred-page scan. The cost is real and recorded:
 a scanned document contributes no readable text to an index built only from
 `represent()`. It stays readable through `ocr_page`. Closing this needs
 model-call budget semantics ("OCR up to N pages") and the concurrency to make it
-bearable, so it lands with or after Cycle 6.
+bearable, so it lands with or after Cycle 7.
 
 **Two open sites for pdfium.** `adapters/pdfium_probe.open_document` raises
 `InfrastructureError`; `PdfHandler._open` returns `None` and degrades. The
@@ -121,7 +135,22 @@ far, at every altitude: a degradation naming a cause nothing checked; a cache
 key claiming two derivations are identical; a message pointing at a tool that
 does not exist; a locator describing a span that is not there; a test docstring
 promising a guarantee its assertions do not provide; a spec claiming a test
-exists when it does not.
+exists when it does not; a capability probe recording a deprecation warning as a
+version number; a test name promising an explanation its assertions never check.
 
 Hunt it by shape across the whole tree, never by site — briefs that name known
 sites produce reviewers who stay inside them.
+
+**Five cycles in, the pattern is clear enough to state as a rule.** It appears
+most often in the components written to prevent it: the probe built to replace
+assumption with observation was asserting; the spec written to hunt the shape
+contradicted itself two sections apart; the tests written to prove a base
+install works proved nothing. This is not carelessness in any one place. It is
+the natural decay of text written beside code and never re-checked against it.
+
+So: **a claim about what code does belongs in a spec, a docstring, a comment or
+a test name only after running the code.** Every ruling this loop makes is
+measured before it is written down, and every cycle's most valuable finding so
+far has come from running something nobody had run — a probe against real
+binaries, a seek past the end of a real video, a serializer against a real
+union.
