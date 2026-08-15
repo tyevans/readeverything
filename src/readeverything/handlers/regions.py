@@ -15,11 +15,18 @@ locator instead of in prose, not because it saves anything.
 from __future__ import annotations
 
 import io
+from typing import TYPE_CHECKING
 
-from PIL import Image
 from pydantic import BaseModel, Field, model_validator
 
 from readeverything.domain.locators import BBox
+
+if TYPE_CHECKING:
+    # Kept out of module scope: `video.py` will import this module in Task 4
+    # and must stay importable with Pillow absent, exactly like `image.py`
+    # already must. Only `crop_to_region`, below, actually needs PIL, and it
+    # imports it lazily.
+    from PIL import Image
 
 
 class RegionParams(BaseModel):
@@ -57,6 +64,13 @@ def crop_to_region(image: Image.Image, region: RegionParams) -> bytes:
     The `max(..., + 1)` guards keep a thin rectangle from rounding to zero
     width or height: PIL would accept the degenerate box and produce an image
     no locator can describe.
+
+    PIL is not imported at module scope, so this module stays importable with
+    Pillow absent — every caller of `RegionParams` and `region_bbox` does not
+    need it. This function never names `Image` at runtime either: the type
+    only appears in the (string, thanks to `from __future__ import
+    annotations`) signature, and the actual `Image.Image` instance is handed
+    in by a caller that already imported PIL itself, per `image.py`.
     """
     box = (
         int(region.x * image.width),

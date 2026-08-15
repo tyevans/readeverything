@@ -1,4 +1,6 @@
+import importlib
 import io
+import sys
 
 import pytest
 from PIL import Image
@@ -46,3 +48,18 @@ def test_region_bbox_carries_the_page_when_given():
 
 def test_region_bbox_has_no_page_by_default():
     assert region_bbox(RegionParams()).page is None
+
+
+def test_the_module_and_region_params_stay_usable_without_pillow(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`video.py` will import this module while Pillow may be absent, so the
+    import itself and the non-cropping API must not require PIL. Only
+    `crop_to_region` — which actually needs pixels — may fail without it."""
+    monkeypatch.setitem(sys.modules, "PIL", None)
+    for module in [m for m in sys.modules if m.startswith("readeverything.handlers.regions")]:
+        monkeypatch.delitem(sys.modules, module, raising=False)
+    regions = importlib.import_module("readeverything.handlers.regions")
+    region = regions.RegionParams(x=0.1, y=0.2, w=0.3, h=0.4)
+    assert region.is_whole_frame is False
+    assert regions.region_bbox(region).x == 0.1

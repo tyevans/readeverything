@@ -27,7 +27,7 @@ CONFINED: dict[str, set[str]] = {
     "langchain_openai": {"adapters/vision_langchain.py", "adapters/clip_langchain.py"},
     "puremagic": {"adapters/detection.py"},
     "charset_normalizer": {"handlers/text.py"},
-    "PIL": {"handlers/image.py"},
+    "PIL": {"handlers/image.py", "handlers/regions.py"},
     "faster_whisper": {"adapters/whisper_transcriber.py"},
     # pypdfium2 wraps Google's PDFium. Two homes: the probe adapter answers
     # cheap document facts, and the PDF handler extracts text — which is not a

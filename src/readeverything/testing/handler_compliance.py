@@ -7,10 +7,39 @@ These are the same bodies the bundled handlers are tested against.
 from __future__ import annotations
 
 import pytest
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from readeverything.domain.identity import ContentHash, MediaKind, MimeType, SourceRef
 from readeverything.domain.rendition import Budget
+
+#: A minimal value per builtin type, used to synthesize a required field this
+#: law has no other way to fill. Deliberately small (empty string, zero): the
+#: point is only that the affordance actually runs, not that the value means
+#: anything.
+_MINIMAL_VALUES: dict[type, object] = {str: "", int: 0, float: 0.0, bool: False}
+
+
+def _synthesize_minimal(params_cls: type[BaseModel]) -> BaseModel | None:
+    """The most trivial instance of `params_cls` that construction allows.
+
+    Fills every required field with a minimal value for its annotated type.
+    Returns `None` if a required field's type isn't one of the builtins above,
+    or if even the minimal values fail the model's own validation — callers
+    treat `None` as "this affordance can't be exercised generically" and skip
+    it narrowly, rather than silently skipping every non-zero-argument
+    affordance the way a bare `except ValidationError: continue` would.
+    """
+    kwargs: dict[str, object] = {}
+    for name, field in params_cls.model_fields.items():
+        if not field.is_required():
+            continue
+        if field.annotation not in _MINIMAL_VALUES:
+            return None
+        kwargs[name] = _MINIMAL_VALUES[field.annotation]
+    try:
+        return params_cls(**kwargs)
+    except ValidationError:
+        return None
 
 
 class MediaHandlerCompliance:
@@ -63,20 +92,27 @@ class MediaHandlerCompliance:
         assert isinstance(card.kind, MediaKind)
 
     async def test_declared_affordances_are_invocable(self, handler, content, ref) -> None:  # type: ignore[no-untyped-def]
-        """Every zero-argument affordance can be invoked with default parameters.
+        """Every declared affordance can actually be invoked.
 
         Drift between what a handler declares and what it implements would make
         capability negotiation a lie: the registry would expose a tool that
-        cannot run. Some affordances take a required, caller-supplied parameter
-        with no sensible default (a free-form question, say); those cannot be
-        constructed with no arguments at all, so this law skips them rather than
-        asserting a default that would defeat the point of requiring the field.
+        cannot run. Most affordances construct their params with zero
+        arguments; a few take a required, caller-supplied field with no
+        sensible default (a free-form question, say). For those, a minimal
+        valid instance is synthesized from the params model's own required
+        fields, so the affordance is still exercised — only a required field
+        of a type this law cannot synthesize (something other than str, int,
+        float, or bool) causes that one affordance to be skipped, narrowly,
+        rather than every non-zero-argument affordance being skipped wholesale.
         """
         for affordance in handler.affordances():
             try:
                 params = affordance.params()
             except ValidationError:
-                continue
+                synthesized = _synthesize_minimal(affordance.params)
+                if synthesized is None:
+                    continue
+                params = synthesized
             await handler.invoke(ref, affordance.name, params)
 
     async def test_an_undeclared_affordance_raises(self, handler, ref) -> None:  # type: ignore[no-untyped-def]
