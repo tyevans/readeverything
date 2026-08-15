@@ -20,6 +20,7 @@ CONFINED: dict[str, set[str]] = {
     "puremagic": {"adapters/detection.py"},
     "charset_normalizer": {"handlers/text.py"},
     "PIL": {"handlers/image.py"},
+    "faster_whisper": {"adapters/whisper_transcriber.py"},
     # pypdfium2 wraps Google's PDFium. Two homes: the probe adapter answers
     # cheap document facts, and the PDF handler extracts text — which is not a
     # probe's job, and no handler imports an adapter.
@@ -41,6 +42,9 @@ CONFINED: dict[str, set[str]] = {
         "adapters/ffmpeg_frames.py",
         # ffmpeg, same pattern, extracting the audio track.
         "adapters/ffmpeg_audio.py",
+        # whisper's transcribe() is synchronous and CPU-bound; run in a
+        # thread so it doesn't block the event loop.
+        "adapters/whisper_transcriber.py",
     },
     # shutil.which locates the executable a capability probe is about to run;
     # confined to the one adapter that probes binaries.

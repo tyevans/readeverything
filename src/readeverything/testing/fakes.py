@@ -84,23 +84,35 @@ class FakeVisionRefusing:
 
 
 class FakeTranscriber:
-    """One cue per second, text derived from the index."""
+    """Cues derived mechanically from the audio's length, with silence
+    between them.
+
+    Contiguous, gap-free cues would hide the gap-filling problem a handler
+    has to solve, so each cue is one second wide followed by a half-second of
+    silence before the next — the shape a real transcriber produces, since
+    speech is not continuous. `confidence` is `None`, matching
+    `WhisperTranscriber`'s choice: this fake never measured anything, so it
+    has nothing to report.
+    """
 
     model_id = "fake-asr@1"
 
-    def __init__(self, *, cues: int = 3) -> None:
-        self._cues = cues
-
-    async def transcribe(self, path: str) -> tuple[TranscriptCue, ...]:
-        return tuple(
-            TranscriptCue(
-                span=TimeSpan(float(i), float(i) + 1.0),
-                text=f"cue {i}",
-                speaker=None,
-                confidence=1.0,
+    async def transcribe(self, audio: bytes, mime: str) -> tuple[TranscriptCue, ...]:
+        cue_count = max(1, len(audio) // 1000)
+        cues = []
+        start = 0.0
+        for i in range(cue_count):
+            end = start + 1.0
+            cues.append(
+                TranscriptCue(
+                    span=TimeSpan(start, end),
+                    text=f"cue {i}",
+                    speaker=None,
+                    confidence=None,
+                )
             )
-            for i in range(self._cues)
-        )
+            start = end + 0.5  # silence between cues
+        return tuple(cues)
 
 
 class FakeDiarizer:
