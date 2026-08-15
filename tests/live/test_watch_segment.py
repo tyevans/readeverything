@@ -9,6 +9,8 @@ that only runs on one machine.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from readeverything.adapters.clip_langchain import build_openai_clip_model
@@ -18,7 +20,7 @@ from readeverything.handlers.video import TOKENS_PER_CLIP_SECOND, WatchSegmentPa
 
 @pytest.mark.live
 async def test_a_short_clip_comes_back_described(
-    live_base_url: str, live_model_name: str, tmp_path
+    live_base_url: str, live_model_name: str, tmp_path: Path
 ) -> None:
     """Verified working against llama.cpp b10438 on 2026-08-15. Before that
     build this same request failed with "Failed to load image or audio file"."""

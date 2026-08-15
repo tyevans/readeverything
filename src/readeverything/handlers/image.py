@@ -25,7 +25,7 @@ try:
 except ImportError as exc:  # pragma: no cover - exercised via a patched sys.modules
     raise ImportError(
         "readeverything's image support needs Pillow, which ships in the "
-        "'images' extra: pip install 'deepagents-read-everything[images]'. "
+        "'images' extra: pip install 'readeverything[images]'. "
         "The composition root omits image handling when Pillow is absent, so "
         "reaching this means the handler was imported directly."
     ) from exc

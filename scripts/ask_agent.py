@@ -23,6 +23,7 @@ from readeverything import (
     FfmpegCaptions,
     FilesystemArtifactStore,
     SemaphoreLimiter,
+    build_openai_clip_model,
     build_openai_vision_model,
     build_perception,
     build_tools,
@@ -31,6 +32,15 @@ from readeverything import (
 BASE_URL = "http://192.168.1.14:8080/v1/"
 MODEL = "qwen3.8-27b-mtp"
 WHISPER_DIR = "models/faster-whisper-small"
+#: A whisper.cpp server. Preferred over the local weights above: measured
+#: 2026-08-15 it transcribed 2.5 hours of audio at ~28x realtime, and it keeps
+#: the ASR load off the machine running the agent. Set to None to fall back.
+WHISPER_URL: str | None = "http://192.168.1.14:8083"
+#: Stated, not discovered: whisper.cpp exposes no endpoint naming its weights,
+#: and this string feeds every transcript cache key. It says "unknown" because
+#: that is the true state — correct it to whatever the server was started with,
+#: and every transcript keyed under the old value is correctly invalidated.
+WHISPER_URL_MODEL_ID = "whisper.cpp/unknown@remote"
 CACHE_DIR = ".cache/readeverything"
 QUESTION = sys.argv[1] if len(sys.argv) > 1 else "What is mystery_subject.mp4 about?"
 
@@ -66,7 +76,15 @@ async def main() -> None:
     store = FilesystemArtifactStore(root=CACHE_DIR)
 
     transcriber = None
-    if Path(WHISPER_DIR).is_dir():
+    if WHISPER_URL is not None:
+        from readeverything import RemoteWhisperTranscriber
+
+        transcriber = CachingTranscriber(
+            inner=RemoteWhisperTranscriber(base_url=WHISPER_URL, model_id=WHISPER_URL_MODEL_ID),
+            store=store,
+        )
+        print(f"transcriber: {transcriber.model_id} (remote, cached)", flush=True)
+    elif Path(WHISPER_DIR).is_dir():
         from readeverything import WhisperTranscriber
 
         # Wrapped so the transcript is produced once per file rather than once
@@ -84,6 +102,11 @@ async def main() -> None:
         vision=vision,
         transcriber=transcriber,
         captions=CachingCaptionExtractor(inner=FfmpegCaptions(), store=store),
+        # Watching a clip is the expensive affordance and the narrow one: it is
+        # capped at 30s because that is what fits this server's 65,536-token
+        # context. Wired here rather than in the library because it needs an
+        # endpoint that accepts video, which not every endpoint does.
+        watcher=build_openai_clip_model(base_url=BASE_URL, model=MODEL),
         artifacts=store,
         observer=Narrate(),
         limiter=SemaphoreLimiter({Capability.VISION: 3}),

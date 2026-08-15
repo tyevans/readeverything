@@ -35,7 +35,7 @@ try:
 except ImportError as exc:  # pragma: no cover - exercised via a patched sys.modules
     raise ImportError(
         "readeverything's PDF support needs pypdfium2, which ships in the "
-        "'documents' extra: pip install 'deepagents-read-everything[documents]'. "
+        "'documents' extra: pip install 'readeverything[documents]'. "
         "The composition root omits PDF handling when pypdfium2 is absent, so "
         "reaching this means the handler was imported directly."
     ) from exc

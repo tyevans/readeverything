@@ -1,0 +1,123 @@
+# CI
+#
+# Every job installs with `uv sync --all-extras` and runs tools through
+# `uv run`, so CI executes the same versions `make check` uses locally.
+#
+# `--all-extras`, never `--extra dev`: the optional extras carry the
+# adapters (vision, images, documents, transcription, agents), and a venv
+# without them fails *collection* on the modules that import them rather
+# than skipping those tests.
+#
+# `addopts` in pyproject already deselects `live` and `accuracy` -- the first
+# needs a model server, the second is a benchmark rather than a pass/fail
+# test. Neither is available to a runner, so neither is selected here.
+#
+# Third-party actions are pinned to a full commit SHA with the tag in a
+# trailing comment. A tag is a mutable pointer, and the release workflow that
+# reuses this one runs next to `id-token: write`.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_call:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: ruff
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: '3.13'
+          enable-cache: true
+      - run: uv sync --all-extras
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+
+  type-check:
+    name: mypy --strict
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: '3.13'
+          enable-cache: true
+      - run: uv sync --all-extras
+      # No paths on the command line: naming files bypasses the configured
+      # file set and answers a different question than the gate.
+      - run: uv run mypy
+
+  import-linter:
+    name: architecture contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: '3.13'
+          enable-cache: true
+      - run: uv sync --all-extras
+      - run: uv run lint-imports
+
+  audit:
+    name: bandit + pip-audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: '3.13'
+          enable-cache: true
+      - run: uv sync --all-extras
+      - run: uv run bandit -q -c pyproject.toml -r src
+      - run: uv run pip-audit
+
+  test:
+    name: pytest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: '3.13'
+          enable-cache: true
+      - run: uv sync --all-extras
+
+      # `ubuntu-latest` does not ship ffmpeg. The audio and video handlers
+      # shell out to `ffmpeg`/`ffprobe`, and `tests/fixtures_media.py` builds
+      # its sample media with them, so without this the media tests error at
+      # fixture setup rather than skipping -- and the coverage floor then fails
+      # for a reason that has nothing to do with coverage. That is exactly how
+      # this job failed on its first run: 87% and a wall of FileNotFoundError.
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          ffmpeg -version | head -1
+
+      # The coverage floor lives in `[tool.coverage.report] fail_under`, so
+      # `--cov` alone is the gate.
+      - run: uv run pytest --cov --cov-report=term-missing

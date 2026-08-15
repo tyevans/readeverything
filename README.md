@@ -9,7 +9,7 @@ asserting one.
 ## Install
 
 ```bash
-pip install deepagents-read-everything
+pip install readeverything
 ```
 
 ## Use it
@@ -135,9 +135,9 @@ representation.
 ## Extras
 
 ```bash
-pip install "deepagents-read-everything[images]"    # Pillow, for image handling
-pip install "deepagents-read-everything[vision]"     # langchain-openai, for vision models
-pip install "deepagents-read-everything[langchain]"  # langchain-core only, no OpenAI client
+pip install "readeverything[images]"    # Pillow, for image handling
+pip install "readeverything[vision]"     # langchain-openai, for vision models
+pip install "readeverything[langchain]"  # langchain-core only, no OpenAI client
 ```
 
 On a machine with none of these installed — no Pillow, no vision client, no

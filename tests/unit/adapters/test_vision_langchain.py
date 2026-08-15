@@ -1,7 +1,9 @@
 import base64
+from typing import cast
 
 import pytest
 from langchain_core.messages import AIMessage, BaseMessage
+from langchain_openai import ChatOpenAI
 
 from readeverything.adapters.vision_langchain import (
     LangChainVisionModel,
@@ -170,9 +172,13 @@ def test_thinking_is_off_unless_a_caller_asks_for_it() -> None:
     departs from the model's own.
     """
     model = build_openai_vision_model(base_url="http://localhost:1/v1", model="m")
-    assert model._chat.extra_body == {"chat_template_kwargs": {"enable_thinking": False}}
+    assert cast(ChatOpenAI, model._chat).extra_body == {
+        "chat_template_kwargs": {"enable_thinking": False}
+    }
 
 
 def test_a_caller_can_ask_for_the_reasoning_channel_back() -> None:
     model = build_openai_vision_model(base_url="http://localhost:1/v1", model="m", thinking=True)
-    assert model._chat.extra_body == {"chat_template_kwargs": {"enable_thinking": True}}
+    assert cast(ChatOpenAI, model._chat).extra_body == {
+        "chat_template_kwargs": {"enable_thinking": True}
+    }

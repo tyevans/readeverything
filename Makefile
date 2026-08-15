@@ -1,8 +1,13 @@
 UV := uv run --all-extras
 
-.PHONY: check lint types arch sec test fmt
+.PHONY: check lint types arch sec test fmt hooks
 
 check: lint types arch sec test
+
+# Install the git hook. Runs everything in `check` except the suite and
+# pip-audit -- see .pre-commit-config.yaml for why those two stay in CI.
+hooks:
+	$(UV) pre-commit install
 
 lint:
 	$(UV) ruff check .

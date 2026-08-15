@@ -1,8 +1,8 @@
 import pytest
-from tests.fixtures_media import audio_only_m4a, ffmpeg_available, video_with_audio
 
 from readeverything.adapters.detection import PuremagicDetector
 from readeverything.domain.identity import MimeType
+from tests.fixtures_media import audio_only_m4a, ffmpeg_available, video_with_audio
 
 PNG_HEADER = b"\x89PNG\r\n\x1a\n" + b"\x00" * 24
 

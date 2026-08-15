@@ -7,6 +7,7 @@ test silently becomes a blank-page test and still passes.
 from __future__ import annotations
 
 import pypdfium2 as pdfium  # type: ignore[import-untyped]  # pypdfium2 ships no py.typed marker
+
 from tests.fixtures_pdf import blank, scanned_like
 
 

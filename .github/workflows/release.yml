@@ -1,0 +1,144 @@
+# Release
+#
+# Publishes to PyPI when a version tag is pushed.
+#
+#   v0.1.0     stable                    -> PyPI, normal release
+#   v0.1.0a1   alpha / beta / rc         -> PyPI, marked pre-release
+#
+# Everything goes to PyPI. TestPyPI is deliberately not wired in: pre-release
+# versions are already invisible to a plain `pip install`, so an alpha on PyPI
+# reaches only people who ask for it by version or pass `--pre`.
+#
+# Publishing uses PyPI Trusted Publishing (OIDC) through the `pypi` GitHub
+# environment -- no API tokens live in this repository.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      is_prerelease: ${{ steps.version.outputs.is_prerelease }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Classify the tag
+        id: version
+        run: |
+          TAG=${GITHUB_REF#refs/tags/v}
+          echo "version=$TAG" >> "$GITHUB_OUTPUT"
+          if [[ "$TAG" =~ (a|b|rc)[0-9]+$ ]]; then
+            echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # A tag that disagrees with `pyproject.toml` would publish a version
+      # nobody can reproduce from the tree. Fail before anything is built.
+      - name: Tag must match pyproject.toml
+        run: |
+          PYPROJECT=$(python -c "import tomllib,sys; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          if [[ "${{ steps.version.outputs.version }}" != "$PYPROJECT" ]]; then
+            echo "::error::Tag version (${{ steps.version.outputs.version }}) does not match pyproject.toml ($PYPROJECT)"
+            exit 1
+          fi
+          echo "Version validated: $PYPROJECT"
+
+  ci:
+    needs: validate
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    needs: ci
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: '3.13'
+          enable-cache: true
+
+      - run: uv build
+
+      # hatchling excludes `.gitignore`-matched paths from file selection, so
+      # a wheel can be silently missing a subpackage while the build stays
+      # green. Install the artifact and import through it.
+      - name: Smoke-test the built wheel
+        run: |
+          uv venv /tmp/smoke
+          VIRTUAL_ENV=/tmp/smoke uv pip install dist/*.whl
+          VIRTUAL_ENV=/tmp/smoke uv run --no-project python -c "
+          import readeverything
+          from readeverything import Budget, Capability, build_perception
+          print('wheel smoke test passed:', len(readeverything.__all__), 'exports')
+          "
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dist
+          path: dist/
+
+  publish-pypi:
+    needs: [validate, build]
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+
+  github-release:
+    needs: [validate, build, publish-pypi]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dist
+          path: dist/
+
+      - name: Extract this version's changelog section
+        id: changelog
+        run: |
+          VERSION=${{ needs.validate.outputs.version }}
+          CONTENT=$(awk "/^## \[$VERSION\]/{flag=1; next} /^## \[/{flag=0} flag" CHANGELOG.md)
+          {
+            echo "content<<CHANGELOG_EOF"
+            echo "$CONTENT"
+            echo "CHANGELOG_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
+        with:
+          files: dist/*
+          prerelease: ${{ needs.validate.outputs.is_prerelease }}
+          generate_release_notes: false
+          body: |
+            ${{ steps.changelog.outputs.content }}
+
+            ## Installation
+
+            ```bash
+            pip install readeverything==${{ needs.validate.outputs.version }}
+            ```

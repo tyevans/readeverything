@@ -51,6 +51,7 @@ from readeverything.testing.fakes import (
     RecordingObserver,
 )
 from readeverything.testing.handler_compliance import MediaHandlerCompliance
+from tests.assertions import text_of
 
 
 class _PathSource:
@@ -901,8 +902,8 @@ async def test_a_frame_past_the_end_says_how_long_the_video_actually_is(
     assert rendition.degraded
     assert not isinstance(rendition.content, ImageContent)
     assert isinstance(rendition.content, TextContent)
-    assert "5" in rendition.content.text  # the real duration appears
-    assert "long" in rendition.content.text
+    assert "5" in text_of(rendition)  # the real duration appears
+    assert "long" in text_of(rendition)
 
 
 async def test_a_negative_frame_request_says_so() -> None:
@@ -915,7 +916,7 @@ async def test_a_negative_frame_request_says_so() -> None:
     )
     assert rendition.degraded
     assert isinstance(rendition.content, TextContent)
-    assert "negative" in rendition.content.text
+    assert "negative" in text_of(rendition)
 
 
 async def test_a_decode_failure_within_the_duration_keeps_the_generic_message() -> None:
@@ -926,8 +927,8 @@ async def test_a_decode_failure_within_the_duration_keeps_the_generic_message() 
     rendition = await handler.invoke(_ref(), "frame_at", FrameAtParams(seconds=2.0))
     assert rendition.degraded
     assert isinstance(rendition.content, TextContent)
-    assert "no frame could be decoded" in rendition.content.text
-    assert "long" not in rendition.content.text
+    assert "no frame could be decoded" in text_of(rendition)
+    assert "long" not in text_of(rendition)
 
 
 async def test_an_undeterminable_duration_falls_back_to_the_generic_message() -> None:
@@ -941,7 +942,7 @@ async def test_an_undeterminable_duration_falls_back_to_the_generic_message() ->
     rendition = await handler.invoke(_ref(), "frame_at", FrameAtParams(seconds=999.0))
     assert rendition.degraded
     assert isinstance(rendition.content, TextContent)
-    assert "no frame could be decoded" in rendition.content.text
+    assert "no frame could be decoded" in text_of(rendition)
 
 
 async def test_frame_at_is_offered_without_vision() -> None:
@@ -1407,7 +1408,7 @@ async def test_watch_segment_describes_a_range_as_one_span(sample_video: str) ->
     )
     assert result.degraded is False
     assert result.locator == TimeSpan(1.0, 3.0)
-    assert "clip of" in result.content.text
+    assert "clip of" in text_of(result)
 
 
 async def test_the_locator_is_the_range_requested(sample_video: str) -> None:
@@ -1441,8 +1442,8 @@ async def test_a_segment_over_the_cap_is_refused_with_its_cost(sample_video: str
         _ref(), "watch_segment", WatchSegmentParams(start_s=0.0, end_s=600.0)
     )
     assert result.degraded is True
-    assert "30" in result.content.text
-    assert "88,033" in result.content.text  # the plateau, not an extrapolation
+    assert "30" in text_of(result)
+    assert "88,033" in text_of(result)  # the plateau, not an extrapolation
     assert watcher.calls == 0, "the model was called despite the cap"
     assert clips.calls == [], "a clip was cut despite the cap"
 
@@ -1459,7 +1460,7 @@ async def test_the_cap_is_a_constructor_argument(sample_video: str) -> None:
         _ref(), "watch_segment", WatchSegmentParams(start_s=0.0, end_s=10.0)
     )
     assert result.degraded is True
-    assert "5s" in result.content.text
+    assert "5s" in text_of(result)
 
 
 async def test_a_backwards_segment_is_refused(sample_video: str) -> None:
@@ -1470,7 +1471,7 @@ async def test_a_backwards_segment_is_refused(sample_video: str) -> None:
         _ref(), "watch_segment", WatchSegmentParams(start_s=5.0, end_s=2.0)
     )
     assert result.degraded is True
-    assert "must end after it starts" in result.content.text
+    assert "must end after it starts" in text_of(result)
 
 
 async def test_a_range_with_no_video_degrades(sample_video: str) -> None:
@@ -1481,7 +1482,7 @@ async def test_a_range_with_no_video_degrades(sample_video: str) -> None:
         _ref(), "watch_segment", WatchSegmentParams(start_s=0.0, end_s=2.0)
     )
     assert result.degraded is True
-    assert "past the end" in result.content.text
+    assert "past the end" in text_of(result)
 
 
 async def test_a_raising_extractor_degrades_rather_than_failing(sample_video: str) -> None:
@@ -1492,7 +1493,7 @@ async def test_a_raising_extractor_degrades_rather_than_failing(sample_video: st
         _ref(), "watch_segment", WatchSegmentParams(start_s=0.0, end_s=2.0)
     )
     assert result.degraded is True
-    assert "could not be cut" in result.content.text
+    assert "could not be cut" in text_of(result)
 
 
 async def test_a_refusing_model_degrades_rather_than_failing(sample_video: str) -> None:
@@ -1503,13 +1504,16 @@ async def test_a_refusing_model_degrades_rather_than_failing(sample_video: str) 
         _ref(), "watch_segment", WatchSegmentParams(start_s=0.0, end_s=2.0)
     )
     assert result.degraded is True
-    assert "could not watch" in result.content.text
+    assert "could not watch" in text_of(result)
 
 
 async def test_watch_segment_is_absent_without_both_ports(sample_video: str) -> None:
     """A server that describes stills need not accept clips — ours did not
     until 2026-08-15 — so the affordance must disappear rather than fail."""
-    names = lambda h: {a.name for a in h.affordances()}  # noqa: E731
+
+    def names(handler: VideoHandler) -> set[str]:
+        return {a.name for a in handler.affordances()}
+
     assert "watch_segment" not in names(_handler(sample_video, vision=FakeVision()))
     assert "watch_segment" not in names(
         _handler(sample_video, vision=FakeVision(), clips=_StubClips())

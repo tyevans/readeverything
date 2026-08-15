@@ -40,6 +40,9 @@ if TYPE_CHECKING:
     from readeverything.adapters.model_probe import ModelProbe as ModelProbe
     from readeverything.adapters.pdfium_probe import PdfiumProbe as PdfiumProbe
     from readeverything.adapters.probing import discover as discover
+    from readeverything.adapters.remote_whisper_transcriber import (
+        RemoteWhisperTranscriber as RemoteWhisperTranscriber,
+    )
     from readeverything.adapters.semaphore_limiter import SemaphoreLimiter as SemaphoreLimiter
     from readeverything.adapters.vision_langchain import (
         LangChainVisionModel as LangChainVisionModel,
@@ -213,6 +216,7 @@ _LAZY: dict[str, str] = {
     "ReadEverythingError": "readeverything.domain.errors",
     "RecordingObserver": "readeverything.testing.fakes",
     "Rendered": "readeverything.domain.rendition",
+    "RemoteWhisperTranscriber": "readeverything.adapters.remote_whisper_transcriber",
     "Rendition": "readeverything.domain.rendition",
     "ResolutionMemo": "readeverything.pipeline.resolution",
     "Segment": "readeverything.domain.card",

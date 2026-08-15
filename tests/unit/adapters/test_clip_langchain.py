@@ -1,7 +1,9 @@
 import base64
+from typing import Any, cast
 
 import pytest
 from langchain_core.messages import AIMessage, BaseMessage
+from langchain_openai import ChatOpenAI
 
 from readeverything.adapters.clip_langchain import (
     LangChainClipModel,
@@ -16,17 +18,17 @@ CLIP = b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 16
 class _RecordingChat:
     """A stand-in chat model that records what it was sent."""
 
-    def __init__(self, reply: object) -> None:
+    def __init__(self, reply: Any) -> None:
         self._reply = reply
         self.sent: list[BaseMessage] = []
 
     async def ainvoke(self, messages: list[BaseMessage], **kwargs: object) -> AIMessage:
         self.sent = list(messages)
-        return AIMessage(content=self._reply)  # type: ignore[arg-type]
+        return AIMessage(content=self._reply)
 
 
 def _model(
-    reply: object = "a rainbow band scrolls left to right",
+    reply: Any = "a rainbow band scrolls left to right",
 ) -> tuple[LangChainClipModel, _RecordingChat]:
     chat = _RecordingChat(reply)
     return LangChainClipModel(chat=chat, model_id="test/model@1"), chat  # type: ignore[arg-type]
@@ -129,7 +131,9 @@ def test_the_builder_turns_thinking_off() -> None:
     spent on deciding how to describe it rather than on describing it, and an
     exhausted budget arrives here as an empty completion."""
     model = build_openai_clip_model(base_url="http://localhost:1/v1", model="qwen")
-    assert model._chat.extra_body == {"chat_template_kwargs": {"enable_thinking": False}}
+    assert cast(ChatOpenAI, model._chat).extra_body == {
+        "chat_template_kwargs": {"enable_thinking": False}
+    }
 
 
 def test_the_builder_reads_no_environment(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -140,4 +144,4 @@ def test_the_builder_reads_no_environment(monkeypatch: pytest.MonkeyPatch) -> No
     model = build_openai_clip_model(
         base_url="http://localhost:1/v1", model="qwen", api_key="explicit"
     )
-    assert str(model._chat.openai_api_base) == "http://localhost:1/v1"
+    assert str(cast(ChatOpenAI, model._chat).openai_api_base) == "http://localhost:1/v1"

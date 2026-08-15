@@ -16,6 +16,7 @@ import pytest
 from readeverything import Budget, build_perception
 from readeverything.handlers.video import CAPTION_MARKER, SPEECH_MARKER
 from readeverything.testing.fakes import FakeTranscriber
+from tests.assertions import text_of
 
 SRT = """1
 00:00:00,500 --> 00:00:02,000
@@ -104,8 +105,8 @@ async def test_an_agent_can_reach_the_words_without_a_model(captioned_video: Pat
     assert "read_transcript" in {a.name for a in card.affordances}
 
     result = await perception.invoke(captioned_video.name, "read_transcript", {})
-    assert "first thing said" in result.content.text
-    assert "second thing said" in result.content.text
+    assert "first thing said" in text_of(result)
+    assert "second thing said" in text_of(result)
     assert result.degraded is False
 
 
@@ -114,8 +115,8 @@ async def test_a_window_reads_only_what_is_inside_it(captioned_video: Path) -> N
     result = await perception.invoke(
         captioned_video.name, "read_transcript", {"start_s": 2.5, "end_s": 5.0}
     )
-    assert "second thing said" in result.content.text
-    assert "first thing said" not in result.content.text
+    assert "second thing said" in text_of(result)
+    assert "first thing said" not in text_of(result)
 
 
 async def test_a_file_without_captions_says_so_rather_than_failing(tmp_path: Path) -> None:
@@ -139,7 +140,7 @@ async def test_a_file_without_captions_says_so_rather_than_failing(tmp_path: Pat
     perception = await build_perception(tmp_path)
     result = await perception.invoke(out.name, "read_transcript", {})
     assert result.degraded is True
-    assert "no readable caption" in result.content.text
+    assert "no readable caption" in text_of(result)
 
 
 async def test_read_transcript_falls_back_to_asr_when_there_are_no_captions(
@@ -180,7 +181,7 @@ async def test_read_transcript_falls_back_to_asr_when_there_are_no_captions(
     perception = await build_perception(tmp_path, transcriber=FakeTranscriber(duration_s=3.0))
     result = await perception.invoke(out.name, "read_transcript", {})
     assert result.degraded is False
-    assert "cue 0" in result.content.text
+    assert "cue 0" in text_of(result)
 
 
 async def test_read_transcript_is_offered_with_only_a_transcriber(tmp_path: Path) -> None:
