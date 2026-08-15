@@ -216,6 +216,11 @@ class PdfHandler:
 
         Encrypted, truncated and malformed files all land here. None rather
         than an exception, because this handler never raises about its input.
+        This is a separate open site from `adapters/pdfium_probe.open_document`,
+        which raises `InfrastructureError` instead — that function backs
+        `PdfiumProbe`, where a probe is allowed to fail loudly. The handler
+        does not call it and must not start doing so: a handler degrades
+        rather than raises, and unifying the two would break that contract.
         """
         try:
             return pdfium.PdfDocument(data)

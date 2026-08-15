@@ -22,10 +22,16 @@ from readeverything.ports.probe_media import DocumentFacts
 
 
 def open_document(data: bytes) -> pdfium.PdfDocument:
-    """Open bytes as a PDF, or raise `InfrastructureError`.
+    """Open bytes as a PDF for `PdfiumProbe`, or raise `InfrastructureError`.
 
-    One place opens documents so the pdfium import stays in one adapter module
-    and every caller gets the same translated failure.
+    This is the probe's own opening helper, not a shared entry point: a probe
+    is allowed to fail loudly, so a bad open becomes a raised
+    `InfrastructureError` here. `PdfHandler._open` (in `handlers/pdf.py`) opens
+    its own document separately and deliberately does not call this function —
+    a handler must never raise from `describe`, `invoke` or `represent`, so it
+    catches the same failure and degrades instead. That difference is
+    intentional: do not "unify" the two open sites, or the handler's
+    never-raise contract breaks.
     """
     try:
         return pdfium.PdfDocument(data)

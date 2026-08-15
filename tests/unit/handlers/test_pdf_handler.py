@@ -217,6 +217,22 @@ async def test_a_scan_without_a_vision_capability_says_so_and_does_not_ocr() -> 
     )
 
 
+async def test_a_scan_with_a_recognizer_still_does_not_ocr_in_represent() -> None:
+    """`represent()` never runs OCR, even when a recogniser is configured: OCR
+    is `DEEP`, gated, and only reachable by name through `ocr_page`. A
+    recogniser being present must not change what the flattened text or its
+    degradation claims happened."""
+    handler = _handler(scanned_like(), recognizer=VisionTextRecognizer(vision=FakeVision()))
+    rendered = await handler.represent(_ref(), Budget(max_chars=None))
+
+    assert "empty" not in rendered.text.lower()
+    assert any("scan" in d.what.lower() or "image" in d.what.lower() for d in rendered.degradations)
+    assert not any(
+        "ocr" in d.detail.lower() and "not attempted" not in d.detail.lower()
+        for d in rendered.degradations
+    )
+
+
 async def test_a_blank_page_is_called_blank_and_not_a_scan() -> None:
     """The other half of the distinction: a blank page must not be described as
     carrying image content nobody read."""
