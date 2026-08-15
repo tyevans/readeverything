@@ -31,3 +31,14 @@ def live_model_name() -> str:
 @pytest.fixture
 def live_vision(live_base_url: str, live_model_name: str) -> LangChainVisionModel:
     return build_openai_vision_model(base_url=live_base_url, model=live_model_name)
+
+
+@pytest.fixture(scope="session")
+def live_whisper_model_dir() -> str | None:
+    """Directory of a converted CTranslate2 whisper model, if configured.
+
+    Unset on this machine, always: no weights are present and none are
+    downloaded. `tests/live/test_transcription.py` skips cleanly when this is
+    `None` rather than attempting to fetch anything.
+    """
+    return os.environ.get("READEVERYTHING_LIVE_WHISPER_MODEL_DIR")

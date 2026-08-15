@@ -83,24 +83,52 @@ class FakeVisionRefusing:
         raise InfrastructureError("the model returned an empty completion")
 
 
+#: How long a cue is, and how much silence follows it, in seconds.
+_FAKE_CUE_S = 1.0
+_FAKE_GAP_S = 0.5
+
+
 class FakeTranscriber:
-    """One cue per second, text derived from the index."""
+    """Cues derived mechanically from a stated duration, with silence between
+    them.
+
+    Contiguous, gap-free cues would hide the gap-filling problem a handler
+    has to solve, so each cue is one second wide followed by a half-second of
+    silence before the next — the shape a real transcriber produces, since
+    speech is not continuous. `confidence` is `None`, matching
+    `WhisperTranscriber`'s choice: this fake never measured anything, so it
+    has nothing to report.
+
+    THE CUES FIT INSIDE `duration_s`, and that is the point. An earlier
+    version derived its cue count from the audio's BYTE length, so 160 KB of
+    WAV became 160 cues spanning four minutes of a five-second file — a shape
+    no transcriber can produce, and one under which a handler's
+    "the last cue extends to the file duration" rule could never fire. The
+    duration is stated rather than measured because this fake decodes nothing;
+    tests that care pass the duration of their fixture.
+    """
 
     model_id = "fake-asr@1"
 
-    def __init__(self, *, cues: int = 3) -> None:
-        self._cues = cues
+    def __init__(self, duration_s: float = 3.0) -> None:
+        self._duration_s = duration_s
 
-    async def transcribe(self, path: str) -> tuple[TranscriptCue, ...]:
-        return tuple(
-            TranscriptCue(
-                span=TimeSpan(float(i), float(i) + 1.0),
-                text=f"cue {i}",
-                speaker=None,
-                confidence=1.0,
+    async def transcribe(self, audio: bytes, mime: str) -> tuple[TranscriptCue, ...]:
+        cues = []
+        start = 0.0
+        index = 0
+        while start + _FAKE_CUE_S <= self._duration_s:
+            cues.append(
+                TranscriptCue(
+                    span=TimeSpan(start, start + _FAKE_CUE_S),
+                    text=f"cue {index}",
+                    speaker=None,
+                    confidence=None,
+                )
             )
-            for i in range(self._cues)
-        )
+            start += _FAKE_CUE_S + _FAKE_GAP_S  # silence between cues
+            index += 1
+        return tuple(cues)
 
 
 class FakeDiarizer:

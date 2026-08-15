@@ -21,6 +21,11 @@ fails loudly with a non-zero exit and a message on stderr. The two checks are
 not interchangeable; unifying "did ffmpeg produce a frame" into an exit-status
 check reintroduces this exact silent failure, so don't.
 
+`ffmpeg_audio.py` is the other half of this asymmetry: a missing audio stream
+exits non-zero with a message on stderr, so it validates by exit status
+instead. Two failure conventions in one tool — see that module for the
+measured numbers.
+
 Returning `None` rather than `b""` on failure matters for the same reason:
 `b""` is a value a caller can pass along, and an empty PNG handed to a model
 as "the frame at t=999" is an observation nothing made. `None` cannot be

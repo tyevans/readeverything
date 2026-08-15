@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     )
     from readeverything.adapters.binary_probe import BinaryProbe as BinaryProbe
     from readeverything.adapters.detection import PuremagicDetector as PuremagicDetector
+    from readeverything.adapters.ffmpeg_audio import FfmpegAudio as FfmpegAudio
     from readeverything.adapters.hashing import ContentHasher as ContentHasher
     from readeverything.adapters.hashing import StatMemo as StatMemo
     from readeverything.adapters.local_source import LocalFileSource as LocalFileSource
@@ -33,6 +34,9 @@ if TYPE_CHECKING:
     )
     from readeverything.adapters.vision_recognizer import (
         VisionTextRecognizer as VisionTextRecognizer,
+    )
+    from readeverything.adapters.whisper_transcriber import (
+        WhisperTranscriber as WhisperTranscriber,
     )
     from readeverything.agent.results import ToolResult as ToolResult
     from readeverything.agent.tools import build_tools as build_tools
@@ -71,6 +75,7 @@ if TYPE_CHECKING:
     from readeverything.domain.rendition import StructuredContent as StructuredContent
     from readeverything.domain.rendition import TextContent as TextContent
     from readeverything.domain.rendition import TranscriptCue as TranscriptCue
+    from readeverything.handlers.audio import AudioHandler as AudioHandler
     from readeverything.handlers.binary import BinaryHandler as BinaryHandler
     from readeverything.handlers.image import ImageHandler as ImageHandler
     from readeverything.handlers.pdf import PdfHandler as PdfHandler
@@ -79,6 +84,7 @@ if TYPE_CHECKING:
     from readeverything.pipeline.perception import Perception as Perception
     from readeverything.pipeline.resolution import ResolutionMemo as ResolutionMemo
     from readeverything.ports.artifacts import ArtifactStore as ArtifactStore
+    from readeverything.ports.audio import AudioExtractor as AudioExtractor
     from readeverything.ports.detection import MimeDetector as MimeDetector
     from readeverything.ports.handler import MediaHandler as MediaHandler
     from readeverything.ports.hashing import ContentHashing as ContentHashing
@@ -88,6 +94,7 @@ if TYPE_CHECKING:
     from readeverything.ports.recognition import TextRecognizer as TextRecognizer
     from readeverything.ports.source import FileSource as FileSource
     from readeverything.ports.source import SourceReader as SourceReader
+    from readeverything.ports.transcription import Transcriber as Transcriber
     from readeverything.ports.vision import VisionModel as VisionModel
     from readeverything.registry.registry import MimeTypeRegistry as MimeTypeRegistry
     from readeverything.registry.registry import NoHandlerError as NoHandlerError
@@ -107,6 +114,8 @@ _LAZY: dict[str, str] = {
     "Affordance": "readeverything.domain.affordance",
     "ArtifactStore": "readeverything.ports.artifacts",
     "ArtifactStoreCompliance": "readeverything.testing.artifact_compliance",
+    "AudioExtractor": "readeverything.ports.audio",
+    "AudioHandler": "readeverything.handlers.audio",
     "BBox": "readeverything.domain.locators",
     "BinaryHandler": "readeverything.handlers.binary",
     "BinaryProbe": "readeverything.adapters.binary_probe",
@@ -130,6 +139,7 @@ _LAZY: dict[str, str] = {
     "FakeTranscriber": "readeverything.testing.fakes",
     "FakeVision": "readeverything.testing.fakes",
     "FakeVisionRefusing": "readeverything.testing.fakes",
+    "FfmpegAudio": "readeverything.adapters.ffmpeg_audio",
     "FileSource": "readeverything.ports.source",
     "FilesystemArtifactStore": "readeverything.adapters.artifact_store",
     "ImageContent": "readeverything.domain.rendition",
@@ -170,11 +180,13 @@ _LAZY: dict[str, str] = {
     "TextRecognizer": "readeverything.ports.recognition",
     "TimeSpan": "readeverything.domain.locators",
     "ToolResult": "readeverything.agent.results",
+    "Transcriber": "readeverything.ports.transcription",
     "TranscriptCue": "readeverything.domain.rendition",
     "UnknownAffordanceError": "readeverything.domain.errors",
     "VideoHandler": "readeverything.handlers.video",
     "VisionModel": "readeverything.ports.vision",
     "VisionTextRecognizer": "readeverything.adapters.vision_recognizer",
+    "WhisperTranscriber": "readeverything.adapters.whisper_transcriber",
     "build_openai_vision_model": "readeverything.adapters.vision_langchain",
     "build_perception": "readeverything.composition",
     "build_tools": "readeverything.agent.tools",

@@ -5,21 +5,30 @@ from pathlib import Path
 
 import pytest
 
+from readeverything.adapters.ffmpeg_audio import FfmpegAudio
 from readeverything.adapters.ffmpeg_frames import FfmpegFrames
 from readeverything.adapters.ffprobe_streams import FfprobeStreams
 from readeverything.domain.capability import Capability
 from readeverything.domain.errors import UnknownAffordanceError
 from readeverything.domain.identity import ContentHash, MediaKind, MimeType, SourceRef
 from readeverything.domain.locators import ByteRange, TimeSpan
-from readeverything.domain.rendition import Budget, ImageContent, Rendered, TextContent
+from readeverything.domain.rendition import (
+    Budget,
+    ImageContent,
+    Rendered,
+    SpeakerId,
+    TextContent,
+    TranscriptCue,
+)
 from readeverything.handlers.video import (
+    SPEECH_MARKER,
     DescribeFrameParams,
     FrameAtParams,
     VideoHandler,
 )
 from readeverything.ports.frames import FrameExtractor
 from readeverything.ports.streams import MediaFacts, StreamInfo, StreamProbe
-from readeverything.testing.fakes import FakeVision
+from readeverything.testing.fakes import FakeTranscriber, FakeVision
 from readeverything.testing.handler_compliance import MediaHandlerCompliance
 
 
@@ -91,6 +100,14 @@ class _NoFrames:
         return ()
 
 
+class _StubAudio:
+    """An extractor that always yields bytes, so a stubbed transcriber runs
+    without a real container behind it."""
+
+    async def extract(self, path: str) -> bytes | None:
+        return b"RIFF...."
+
+
 class _RefusingVision:
     model_id = "refusing@1"
 
@@ -120,12 +137,16 @@ def _handler(
     vision: object | None = None,
     interval: float = 2.0,
     frames: object | None = None,
+    audio: object | None = None,
+    transcriber: object | None = None,
 ) -> VideoHandler:
     return VideoHandler(
         source=_PathSource(path),
         probe=FfprobeStreams(),
         frames=frames or FfmpegFrames(),  # type: ignore[arg-type]  # structural stub in tests
         vision=vision,  # type: ignore[arg-type]  # structural stub in tests
+        audio=audio,  # type: ignore[arg-type]  # structural stub in tests
+        transcriber=transcriber,  # type: ignore[arg-type]  # structural stub in tests
         sample_interval_s=interval,
     )
 
@@ -154,6 +175,8 @@ def _stub_handler(facts: MediaFacts, **kwargs: object) -> VideoHandler:
         probe=_StubProbe(facts),
         frames=kwargs.get("frames") or _NoFrames(),  # type: ignore[arg-type]
         vision=kwargs.get("vision"),  # type: ignore[arg-type]
+        audio=kwargs.get("audio"),  # type: ignore[arg-type]
+        transcriber=kwargs.get("transcriber"),  # type: ignore[arg-type]
         sample_interval_s=float(kwargs.get("interval", 2.0)),  # type: ignore[arg-type]
     )
 
@@ -409,6 +432,246 @@ async def test_a_budget_of_zero_still_keeps_one_character(sample_video: str) -> 
         _ref(), Budget(max_chars=0)
     )
     assert len(rendered.text) == 1
+
+
+# --- the transcript on the timeline -------------------------------------------
+
+
+async def test_video_without_a_transcriber_is_unchanged(sample_video: str) -> None:
+    """The regression guard. Existing behaviour must be byte-identical, because
+    every video test in the suite depends on it, and if the merge changed the
+    formatting even when no cue exists they would all move at once."""
+    before = await _handler(sample_video, vision=FakeVision()).represent(
+        _ref(), Budget(max_chars=None)
+    )
+    after = await _handler(sample_video, vision=FakeVision(), transcriber=None).represent(
+        _ref(), Budget(max_chars=None)
+    )
+    assert before.text == after.text
+
+
+async def test_the_card_transcribes_nothing(sample_video: str) -> None:
+    """`describe()` stays probe-only and cheap. An extractor and a transcriber
+    that both explode prove it: a card that reached for the audio would fail."""
+
+    class _ExplodingAudio:
+        async def extract(self, path: str) -> bytes | None:
+            raise AssertionError("describe() must not extract audio")
+
+    class _ExplodingTranscriber:
+        model_id = "exploding@1"
+
+        async def transcribe(self, audio: bytes, mime: str) -> tuple[TranscriptCue, ...]:
+            raise AssertionError("describe() must not transcribe")
+
+    card = await _handler(
+        sample_video, audio=_ExplodingAudio(), transcriber=_ExplodingTranscriber()
+    ).describe(_ref())
+    assert card.facts["readable"] == "yes"
+
+
+async def test_cues_and_frames_interleave_in_timestamp_order(sample_video: str) -> None:
+    rendered = await _handler(
+        sample_video,
+        vision=FakeVision(),
+        audio=FfmpegAudio(),
+        transcriber=FakeTranscriber(duration_s=5.0),
+    ).represent(_ref(), Budget(max_chars=None))
+    spans = _time_spans(rendered)
+    assert spans == sorted(spans, key=lambda s: s.start_s)
+    assert spans[0].start_s == 0.0
+    for earlier, later in pairwise(spans):
+        assert earlier.end_s == pytest.approx(later.start_s)
+
+
+async def test_a_transcript_adds_entries_the_frames_alone_did_not(sample_video: str) -> None:
+    """The point of the merge: with a transcriber the timeline carries strictly
+    more, and the extra entries are the cues."""
+    without = await _handler(sample_video, vision=FakeVision()).represent(
+        _ref(), Budget(max_chars=None)
+    )
+    with_speech = await _handler(
+        sample_video,
+        vision=FakeVision(),
+        audio=FfmpegAudio(),
+        transcriber=FakeTranscriber(duration_s=5.0),
+    ).represent(_ref(), Budget(max_chars=None))
+    assert len(with_speech.locator_map.segments) > len(without.locator_map.segments)
+    assert SPEECH_MARKER in with_speech.text
+    assert SPEECH_MARKER not in without.text
+
+
+async def test_a_silent_video_degrades_rather_than_raising(silent_video: str) -> None:
+    """`AudioExtractor.extract` returning `None` is a normal answer, not an
+    error: a silent video still has a visual timeline."""
+    rendered = await _handler(
+        silent_video,
+        vision=FakeVision(),
+        audio=FfmpegAudio(),
+        transcriber=FakeTranscriber(duration_s=5.0),
+    ).represent(_ref(), Budget(max_chars=None))
+    assert rendered.text.strip()
+    assert rendered.locator_map.length == len(rendered.text)
+    assert any("audio track" in d.what for d in rendered.degradations)
+
+
+async def test_a_transcriber_that_raises_degrades_rather_than_raising(sample_video: str) -> None:
+    class _RaisingTranscriber:
+        model_id = "raising@1"
+
+        async def transcribe(self, audio: bytes, mime: str) -> tuple[TranscriptCue, ...]:
+            raise RuntimeError("whisper exploded")
+
+    rendered = await _handler(
+        sample_video, vision=FakeVision(), audio=FfmpegAudio(), transcriber=_RaisingTranscriber()
+    ).represent(_ref(), Budget(max_chars=None))
+    assert rendered.text.strip()
+    assert any("transcription failed" in d.what for d in rendered.degradations)
+
+
+async def test_an_extractor_that_raises_is_treated_as_no_audio_track() -> None:
+    class _RaisingAudio:
+        async def extract(self, path: str) -> bytes | None:
+            raise RuntimeError("ffmpeg exploded")
+
+    rendered = await _stub_handler(
+        _facts(duration_s=5.0),
+        vision=FakeVision(),
+        audio=_RaisingAudio(),
+        transcriber=FakeTranscriber(duration_s=5.0),
+    ).represent(_ref(), Budget(max_chars=None))
+    assert any("audio track" in d.what for d in rendered.degradations)
+
+
+async def test_cues_past_the_probed_duration_are_dropped_and_reported() -> None:
+    """A locator on a moment the file does not contain is the defect this
+    project keeps finding. The transcriber and the probe disagreeing is
+    reported rather than silently resolved in the transcriber's favour."""
+
+    class _OverrunningTranscriber:
+        model_id = "overrun@1"
+
+        async def transcribe(self, audio: bytes, mime: str) -> tuple[TranscriptCue, ...]:
+            return (
+                TranscriptCue(
+                    span=TimeSpan(1.0, 9.0), text="overhangs", speaker=None, confidence=None
+                ),
+                TranscriptCue(
+                    span=TimeSpan(20.0, 21.0), text="past the end", speaker=None, confidence=None
+                ),
+            )
+
+    rendered = await _stub_handler(
+        _facts(duration_s=5.0),
+        vision=FakeVision(),
+        audio=_StubAudio(),
+        transcriber=_OverrunningTranscriber(),
+    ).represent(_ref(), Budget(max_chars=None))
+    assert "past the end" not in rendered.text
+    assert "overhangs" in rendered.text
+    assert any("cues outside the file" in d.what for d in rendered.degradations)
+    for span in _time_spans(rendered):
+        assert span.start_s < 5.0
+
+
+async def test_a_cue_and_a_frame_at_the_same_instant_are_two_entries() -> None:
+    """Not a conflict: they say different things about the same moment, and a
+    zero-width `TimeSpan` is what the domain forbids, not a collision."""
+
+    class _CueAtZero:
+        model_id = "at-zero@1"
+
+        async def transcribe(self, audio: bytes, mime: str) -> tuple[TranscriptCue, ...]:
+            return (
+                TranscriptCue(
+                    span=TimeSpan(0.0, 1.0), text="spoken", speaker=None, confidence=None
+                ),
+            )
+
+    rendered = await _stub_handler(
+        _facts(duration_s=5.0),
+        vision=FakeVision(),
+        audio=_StubAudio(),
+        transcriber=_CueAtZero(),
+        interval=2.0,
+    ).represent(_ref(), Budget(max_chars=None))
+    spans = _time_spans(rendered)
+    assert spans[0].start_s == 0.0
+    for span in spans:
+        assert span.end_s > span.start_s
+    for earlier, later in pairwise(spans):
+        assert earlier.end_s == pytest.approx(later.start_s)
+
+
+async def test_a_speaker_is_named_when_the_transcriber_reports_one() -> None:
+    class _DiarizingTranscriber:
+        model_id = "diarizing@1"
+
+        async def transcribe(self, audio: bytes, mime: str) -> tuple[TranscriptCue, ...]:
+            return (
+                TranscriptCue(
+                    span=TimeSpan(1.0, 2.0),
+                    text="hello",
+                    speaker=SpeakerId("SPEAKER_01"),
+                    confidence=None,
+                ),
+            )
+
+    rendered = await _stub_handler(
+        _facts(duration_s=5.0),
+        vision=FakeVision(),
+        audio=_StubAudio(),
+        transcriber=_DiarizingTranscriber(),
+    ).represent(_ref(), Budget(max_chars=None))
+    assert "SPEAKER_01" in rendered.text
+
+
+async def test_a_transcriber_that_hears_nothing_leaves_the_timeline_alone() -> None:
+    class _SilentTranscriber:
+        model_id = "silent@1"
+
+        async def transcribe(self, audio: bytes, mime: str) -> tuple[TranscriptCue, ...]:
+            return ()
+
+    rendered = await _stub_handler(
+        _facts(duration_s=5.0),
+        vision=FakeVision(),
+        audio=_StubAudio(),
+        transcriber=_SilentTranscriber(),
+    ).represent(_ref(), Budget(max_chars=None))
+    assert rendered.text.strip()
+    assert any("no speech detected" in d.what for d in rendered.degradations)
+
+
+async def test_a_transcriber_without_an_extractor_reports_rather_than_guessing() -> None:
+    """Nothing can reach the audio track without an extractor, so the handler
+    says so instead of quietly rendering a visual-only timeline."""
+    rendered = await _stub_handler(
+        _facts(duration_s=5.0),
+        vision=FakeVision(),
+        audio=None,
+        transcriber=FakeTranscriber(duration_s=5.0),
+    ).represent(_ref(), Budget(max_chars=None))
+    assert any("audio track" in d.what for d in rendered.degradations)
+
+
+async def test_truncation_with_a_transcript_reports_the_characters_it_kept(
+    sample_video: str,
+) -> None:
+    def build() -> VideoHandler:
+        return _handler(
+            sample_video,
+            vision=FakeVision(),
+            audio=FfmpegAudio(),
+            transcriber=FakeTranscriber(duration_s=5.0),
+        )
+
+    unbounded = await build().represent(_ref(), Budget(max_chars=None))
+    rendered = await build().represent(_ref(), Budget(max_chars=30))
+    assert len(rendered.text) == 30
+    assert any(
+        d.detail == f"kept 30 of {len(unbounded.text)} characters" for d in rendered.degradations
+    )
 
 
 # --- affordances --------------------------------------------------------------
