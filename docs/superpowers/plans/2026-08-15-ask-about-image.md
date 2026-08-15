@@ -393,7 +393,25 @@ git commit -m "Ask a question about an image, or about part of one"
 - Consumes: Task 1's helpers.
 - Produces: `class AskAboutPageParams(RegionParams)` with `question: str` (required), `page: int = 1` (`ge=1`), `dpi: int = 150` (`gt=0`). Affordance name `"ask_about_image"` — the *name* is the convention, the params class name is local.
 
-Note: the PDF handler's vision model is `self._recognizer` (see `_ocr_page`), not `self._vision`. Offer this affordance under the same condition `ocr_page` uses.
+**Read this before writing anything.** `PdfHandler` today holds a
+`TextRecognizer`, not a `VisionModel`, and `TextRecognizer.recognize(image,
+mime) -> str` takes **no prompt** — it structurally cannot carry a question.
+So this task also adds a vision dependency:
+
+- `PdfHandler.__init__` gains `vision: VisionModel | None = None`, stored as
+  `self._vision`, alongside the existing `recognizer`.
+- `ask_about_image` is offered when `self._vision is not None`. It is NOT
+  gated on the recognizer.
+- `ocr_page` keeps using `self._recognizer.recognize(...)` and must not
+  change in any way.
+- `composition.py` — in the function that builds `PdfHandler` (around line
+  97-101, where `recognizer` is already built from `vision`) — passes
+  `vision=vision` as well. `vision` is already in scope there.
+- Add `from readeverything.ports.vision import VisionModel` to `pdf.py`.
+
+Also add one test asserting `ocr_page` still works when `vision` is passed
+and `recognizer` is not, and vice versa — the two dependencies are
+independent and nothing should couple them.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -401,15 +419,15 @@ Append to `tests/unit/handlers/test_pdf_handler.py`, reusing that file's existin
 
 ```python
 @pytest.mark.asyncio
-async def test_ask_about_image_is_absent_without_a_recognizer(pdf_bytes):
-    handler = PdfHandler(source=FakeSource({"a.pdf": pdf_bytes}))
+async def test_ask_about_image_is_absent_without_a_vision_model(pdf_bytes):
+    handler = PdfHandler(source=FakeSource({"a.pdf": pdf_bytes}), probe=PdfiumProbe())
     assert "ask_about_image" not in {a.name for a in handler.affordances()}
 
 
 @pytest.mark.asyncio
 async def test_ask_about_image_reaches_the_model(pdf_bytes, pdf_ref):
     vision = FakeVision()
-    handler = PdfHandler(source=FakeSource({"a.pdf": pdf_bytes}), recognizer=vision)
+    handler = PdfHandler(source=FakeSource({"a.pdf": pdf_bytes}), vision=vision)
     rendition = await handler.invoke(
         pdf_ref, "ask_about_image", AskAboutPageParams(question="What chart is this?", page=1)
     )
@@ -419,7 +437,7 @@ async def test_ask_about_image_reaches_the_model(pdf_bytes, pdf_ref):
 
 @pytest.mark.asyncio
 async def test_the_locator_carries_the_page(pdf_bytes, pdf_ref):
-    handler = PdfHandler(source=FakeSource({"a.pdf": pdf_bytes}), recognizer=FakeVision())
+    handler = PdfHandler(source=FakeSource({"a.pdf": pdf_bytes}), vision=FakeVision())
     rendition = await handler.invoke(
         pdf_ref,
         "ask_about_image",
@@ -431,7 +449,7 @@ async def test_the_locator_carries_the_page(pdf_bytes, pdf_ref):
 
 @pytest.mark.asyncio
 async def test_a_missing_page_degrades_rather_than_raising(pdf_bytes, pdf_ref):
-    handler = PdfHandler(source=FakeSource({"a.pdf": pdf_bytes}), recognizer=FakeVision())
+    handler = PdfHandler(source=FakeSource({"a.pdf": pdf_bytes}), vision=FakeVision())
     rendition = await handler.invoke(
         pdf_ref, "ask_about_image", AskAboutPageParams(question="q", page=9999)
     )
@@ -454,7 +472,7 @@ class AskAboutPageParams(RegionParams):
     dpi: int = Field(default=150, gt=0, description="Render resolution, in dots per inch.")
 ```
 
-Offer the affordance under the same `self._recognizer is not None` condition that gates `ocr_page`:
+Offer the affordance under a `self._vision is not None` condition (NOT the recognizer's):
 
 ```python
                 Affordance(
@@ -471,11 +489,11 @@ Offer the affordance under the same `self._recognizer is not None` condition tha
                 ),
 ```
 
-Add a private method modelled directly on `_ocr_page` — same open, same page-count guard, same `_PIL_AVAILABLE` guard, same `finally: document.close()`:
+Add a private method modelled directly on `_ocr_page` (structure only — it calls `self._vision.describe(png, "image/png", params.question)`, NOT the recognizer) — same open, same page-count guard, same `_PIL_AVAILABLE` guard, same `finally: document.close()`:
 
 ```python
     async def _ask_about_page(self, ref: SourceRef, params: AskAboutPageParams) -> Rendition:
-        if self._recognizer is None:
+        if self._vision is None:
             raise UnknownAffordanceError("ask_about_image", (a.name for a in self.affordances()))
         data = await self._source.read_bytes(ref.uri)
         document = self._open(data)
@@ -501,7 +519,7 @@ Add a private method modelled directly on `_ocr_page` — same open, same page-c
         if not params.is_whole_frame:
             png = crop_to_region(Image.open(io.BytesIO(png)), params)
         try:
-            text = await self._recognizer.describe(png, "image/png", params.question)
+            text = await self._vision.describe(png, "image/png", params.question)
         except Exception:
             return self._degraded_text(
                 region_bbox(params, page=params.page),
