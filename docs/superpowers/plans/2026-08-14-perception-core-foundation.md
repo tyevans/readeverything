@@ -11,6 +11,19 @@
 **Spec:** `docs/superpowers/specs/2026-08-14-readeverything-perception-core-design.md`
 **Prerequisite RFC (separate repo, not this plan):** `docs/rfcs/0001-source-spans-carry-caller-provenance.md`
 
+## Status: executed
+
+This plan was executed to completion on branch `perception-core`. **The committed
+source is authoritative, not this document.** Eight of the code blocks below
+contained genuine defects found during execution — each was corrected here in a
+`docs:` commit as it was found, but the final fix wave also changed
+`agent/tools.py` (validation errors routed through `handle_validation_error`),
+`adapters/detection.py` (both detection branches guarded so the octet-stream tail
+is always reachable), `__init__.py` (ports, tool pack and compliance suites
+exported) and several tests, which are reflected in the source rather than here.
+
+Read this plan for the reasoning; read `src/` for the current shape.
+
 ## Scope
 
 This plan covers spec sections §3, §4, §5, §6, §8, §10 (tool pack half), §12, §13, §14, and the text/binary rows of §7.
@@ -2969,11 +2982,24 @@ class MediaHandlerCompliance:
         assert rendered.locator_map.length == len(rendered.text)
 
     async def test_represent_respects_a_budget_or_reports_degradation(self, handler, ref) -> None:  # type: ignore[no-untyped-def]
-        """Truncation must be announced. Silent truncation is invisible in
-        exactly the case where the answer is wrong."""
+        """Truncation must be announced, and announcements must be truthful.
+
+        Comparing against an unbounded render closes both directions: text
+        shorter than unbounded REQUIRES a degradation, and text equal to
+        unbounded FORBIDS a spurious one. An earlier `permits(...) or
+        degradations` form was satisfiable by a handler that truncated
+        silently AND by one that cried wolf without truncating — it
+        constrained nothing while appearing to certify a guarantee that
+        ships to third-party handler authors.
+        """
+        unbounded = await handler.represent(ref, Budget(max_chars=None))
         budget = Budget(max_chars=10)
         rendered = await handler.represent(ref, budget)
-        assert budget.permits(len(rendered.text)) or rendered.degradations
+        assert budget.permits(len(rendered.text))
+        if len(rendered.text) < len(unbounded.text):
+            assert rendered.degradations, "truncated without reporting a degradation"
+        else:
+            assert not rendered.degradations, "reported a degradation without truncating"
 ```
 
 ```python
@@ -3455,19 +3481,35 @@ class BinaryHandler:
         )
 
     async def represent(self, ref: SourceRef, budget: Budget) -> Rendered:
-        text = (
+        # Truncation is announced, never silent. Silent truncation is the
+        # failure mode invisible in exactly the case where the answer is wrong,
+        # so a handler that shortens its output must say so.
+        full = (
             f"Binary file {ref.uri} of type {ref.mime}, {ref.size_bytes} bytes. "
             f"No textual content could be extracted."
         )
-        if budget.max_chars is not None:
-            text = text[: budget.max_chars] or text[:1]
+        text = full
+        degradations: tuple[Degradation, ...] = ()
+        if budget.max_chars is not None and len(full) > budget.max_chars:
+            degradations = (
+                Degradation(
+                    what="text truncated",
+                    detail=f"kept {budget.max_chars} of {len(full)} characters",
+                ),
+            )
+            text = full[: budget.max_chars]
+        # A zero budget still yields one character, because CharSpan(0, 0)
+        # raises by construction. That overrun is declared by the degradation
+        # above rather than hidden.
+        if not text:
+            text = full[:1]
         return Rendered(
             text=text,
             locator_map=LocatorMap.build(
                 (LocatorSegment(CharSpan(0, len(text)), ByteRange(0, max(1, ref.size_bytes))),)
             ),
             barriers=(),
-            degradations=(),
+            degradations=degradations,
         )
 ```
 
