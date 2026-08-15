@@ -9,6 +9,7 @@ from readeverything.domain.locators import BBox, CharSpan, PageRef
 from readeverything.domain.observation import OperationFinished, OperationStarted
 from readeverything.domain.rendition import Budget, ImageContent, TextContent
 from readeverything.handlers.pdf import (
+    AskAboutPageParams,
     OcrPageParams,
     PageImageParams,
     PageRegionParams,
@@ -368,10 +369,100 @@ async def test_an_observer_that_raises_does_not_change_the_result() -> None:
     assert quiet == noisy
 
 
+@pytest.fixture
+def pdf_bytes() -> bytes:
+    return born_digital(["Alpha."])
+
+
+@pytest.fixture
+def pdf_ref() -> SourceRef:
+    return _ref()
+
+
+@pytest.mark.asyncio
+async def test_ask_about_image_is_absent_without_a_vision_model(pdf_bytes):
+    handler = PdfHandler(source=FakeSource({"a.pdf": pdf_bytes}), probe=PdfiumProbe())
+    assert "ask_about_image" not in {a.name for a in handler.affordances()}
+
+
+@pytest.mark.asyncio
+async def test_ask_about_image_reaches_the_model(pdf_bytes, pdf_ref):
+    vision = FakeVision()
+    handler = PdfHandler(
+        source=FakeSource({"a.pdf": pdf_bytes}), probe=PdfiumProbe(), vision=vision
+    )
+    rendition = await handler.invoke(
+        pdf_ref, "ask_about_image", AskAboutPageParams(question="What chart is this?", page=1)
+    )
+    assert "What chart is this?" in rendition.content.text
+    assert vision.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_the_locator_carries_the_page(pdf_bytes, pdf_ref):
+    handler = PdfHandler(
+        source=FakeSource({"a.pdf": pdf_bytes}), probe=PdfiumProbe(), vision=FakeVision()
+    )
+    rendition = await handler.invoke(
+        pdf_ref,
+        "ask_about_image",
+        AskAboutPageParams(question="q", page=1, x=0.0, y=0.5, w=1.0, h=0.5),
+    )
+    assert rendition.locator.page == 1
+    assert rendition.locator.y == 0.5
+
+
+@pytest.mark.asyncio
+async def test_a_missing_page_degrades_rather_than_raising(pdf_bytes, pdf_ref):
+    handler = PdfHandler(
+        source=FakeSource({"a.pdf": pdf_bytes}), probe=PdfiumProbe(), vision=FakeVision()
+    )
+    rendition = await handler.invoke(
+        pdf_ref, "ask_about_image", AskAboutPageParams(question="q", page=9999)
+    )
+    assert rendition.degraded
+
+
+@pytest.mark.asyncio
+async def test_ocr_page_works_with_recognizer_but_no_vision(pdf_bytes, pdf_ref):
+    """`recognizer` and `vision` are independent dependencies; neither implies the other."""
+    handler = PdfHandler(
+        source=FakeSource({"a.pdf": pdf_bytes}),
+        probe=PdfiumProbe(),
+        recognizer=VisionTextRecognizer(vision=FakeVision()),
+    )
+    rendition = await handler.invoke(pdf_ref, "ocr_page", OcrPageParams(page=1))
+    assert rendition.degraded
+
+
+@pytest.mark.asyncio
+async def test_ask_about_image_works_with_vision_but_no_recognizer(pdf_bytes, pdf_ref):
+    handler = PdfHandler(
+        source=FakeSource({"a.pdf": pdf_bytes}),
+        probe=PdfiumProbe(),
+        vision=FakeVision(),
+    )
+    rendition = await handler.invoke(
+        pdf_ref, "ask_about_image", AskAboutPageParams(question="q", page=1)
+    )
+    assert not rendition.degraded
+
+
 class TestPdfHandlerCompliance(MediaHandlerCompliance):
     @pytest.fixture
     def handler(self) -> PdfHandler:
-        return _handler(COMPLIANCE_PDF)
+        return PdfHandler(
+            source=FakeSource(
+                {
+                    "a.pdf": COMPLIANCE_PDF,
+                    "somewhere/else": COMPLIANCE_PDF,
+                    "compliance-subject": COMPLIANCE_PDF,
+                }
+            ),
+            probe=PdfiumProbe(),
+            recognizer=VisionTextRecognizer(vision=FakeVision()),
+            vision=FakeVision(),
+        )
 
     @pytest.fixture
     def content(self) -> bytes:

@@ -98,7 +98,13 @@ def _optional_pdf_handler(
         VisionTextRecognizer(vision=vision) if vision is not None else None
     )
     return [
-        PdfHandler(source=source, probe=PdfiumProbe(), recognizer=recognizer, observer=observer)
+        PdfHandler(
+            source=source,
+            probe=PdfiumProbe(),
+            recognizer=recognizer,
+            vision=vision,
+            observer=observer,
+        )
     ]
 
 
