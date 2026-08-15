@@ -15,6 +15,8 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from readeverything.adapters.cache_key import artifact_key
+from readeverything.adapters.rendition_codec import decode_rendition, encode_rendition
 from readeverything.domain.affordance import Affordance
 from readeverything.domain.card import Card
 from readeverything.domain.errors import UnknownAffordanceError
@@ -96,7 +98,29 @@ class Perception:
         """Invoke a named affordance. Raises if it is not available here."""
         ref, handler = await self._resolve(uri)
         affordance = self._affordance(handler, name)
-        return await handler.invoke(ref, name, affordance.params.model_validate(dict(params)))
+        validated = affordance.params.model_validate(dict(params))
+
+        # `handler_version` of 0 means the handler is opting out: its output is
+        # cheap or nondeterministic enough that an artifact would cost more than
+        # it saves. The decision belongs to the handler, which knows what it
+        # does, not to the pipeline, which does not.
+        if handler.handler_version == 0:
+            return await handler.invoke(ref, name, validated)
+
+        key = artifact_key(
+            content_hash=ref.content_hash,
+            handler_id=handler.handler_id,
+            handler_version=handler.handler_version,
+            affordance=name,
+            params=validated.model_dump(mode="json"),
+            capabilities=self._registry.capabilities,
+        )
+        cached = await self._artifacts.get(key)
+        if cached is not None:
+            return decode_rendition(cached)
+        rendition = await handler.invoke(ref, name, validated)
+        await self._artifacts.put(key, encode_rendition(rendition))
+        return rendition
 
     async def represent(self, uri: str, budget: Budget) -> Rendered:
         """Flatten `uri` for indexing: text plus locator map plus barriers."""
