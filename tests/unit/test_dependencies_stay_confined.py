@@ -20,9 +20,10 @@ CONFINED: dict[str, set[str]] = {
     "puremagic": {"adapters/detection.py"},
     "charset_normalizer": {"handlers/text.py"},
     "PIL": {"handlers/image.py"},
-    # pypdfium2 wraps Google's PDFium; confined to the one adapter module so
-    # the pdfium import lives in exactly one place, per task-2's brief.
-    "pypdfium2": {"adapters/pdfium_probe.py"},
+    # pypdfium2 wraps Google's PDFium. Two homes: the probe adapter answers
+    # cheap document facts, and the PDF handler extracts text — which is not a
+    # probe's job, and no handler imports an adapter.
+    "pypdfium2": {"adapters/pdfium_probe.py", "handlers/pdf.py"},
     "subprocess": set(),
     # asyncio's subprocess API is how binary_probe.py spawns external
     # executables; the other three files use asyncio only for async I/O, but
