@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Mapping, Sequence
 
+from readeverything.domain.errors import InfrastructureError
 from readeverything.domain.locators import TimeSpan
 from readeverything.domain.rendition import SpeakerId, TranscriptCue
 
@@ -51,12 +52,35 @@ class FakeSource:
 
 
 class FakeVision:
-    """Describes an image by its size, deterministically."""
+    """Describes an image by its size, deterministically.
 
-    model_id = "fake-vision@1"
+    Counts its calls, so a test can assert a handler declined to invoke the
+    model at all — an assertion no return value can express.
+    """
+
+    model_id: str = "fake-vision@1"
+
+    def __init__(self) -> None:
+        self.calls = 0
 
     async def describe(self, data: bytes, mime: str, prompt: str) -> str:
+        self.calls += 1
         return f"[{mime} image of {len(data)} bytes] {prompt}"
+
+
+class FakeVisionRefusing:
+    """A vision model that answers with nothing.
+
+    Not a hypothetical: reasoning models split their output into a reasoning
+    channel and a content channel, and a model that spends its whole budget
+    reasoning returns empty content. A handler must degrade rather than emit an
+    empty description as if it were an observation.
+    """
+
+    model_id: str = "fake-vision-refusing@1"
+
+    async def describe(self, data: bytes, mime: str, prompt: str) -> str:
+        raise InfrastructureError("the model returned an empty completion")
 
 
 class FakeTranscriber:

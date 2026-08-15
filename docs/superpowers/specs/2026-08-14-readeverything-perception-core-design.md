@@ -643,7 +643,7 @@ import.
 
 ### Reference model deployment
 
-OpenAI-compatible endpoint at `http://192.168.1.14/v1/`, model
+OpenAI-compatible endpoint at `http://192.168.1.14:8080/v1/`, model
 `qwen3.8-27b-mtp` (multimodal: images and video, documents, STEM diagrams,
 long-form video).
 
@@ -688,9 +688,14 @@ Protocol with no implementer is untested surface.
 concurrent expensive work); generated media fixtures (they arrive with the
 handlers needing them).
 
-**Small and carried:** no test for `BinaryHandler` at `max_chars=0` (correct by
+**Small and carried:** ~~no test for `BinaryHandler` at `max_chars=0` (correct by
 trace — it returns one character because `CharSpan(0, 0)` raises, and the
-overrun is announced); `resolve_span` scans to the end of the map rather than
+overrun is announced)~~ — **wrong, and closed in Plan 2.** The trace was right
+that a character comes back and wrong that the announcement was true: the
+degradation reported the budget, so `max_chars=0` claimed "kept 0" of one
+character. Reading the trace confirmed the behaviour and never checked the
+claim the behaviour makes about itself. All three handlers now report
+`len(text)`; `resolve_span` scans to the end of the map rather than
 stopping at the first non-overlapping segment; `LocatorMap.__post_init__` makes
 two O(n) passes; coverage passes at 91% against a 90% floor, which is under a
 point of headroom.

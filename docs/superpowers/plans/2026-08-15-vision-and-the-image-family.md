@@ -716,7 +716,7 @@ from readeverything.adapters.vision_langchain import (
     build_openai_vision_model,
 )
 
-DEFAULT_BASE_URL = "http://192.168.1.14/v1/"
+DEFAULT_BASE_URL = "http://192.168.1.14:8080/v1/"
 DEFAULT_MODEL = "qwen3.8-27b-mtp"
 
 
@@ -1242,10 +1242,19 @@ class OcrParams(BaseModel):
 
 
 class CropParams(BaseModel):
-    x: float = Field(ge=0.0, le=1.0, description="Left edge, 0-1 of image width.")
-    y: float = Field(ge=0.0, le=1.0, description="Top edge, 0-1 of image height.")
-    w: float = Field(gt=0.0, le=1.0, description="Width, 0-1 of image width.")
-    h: float = Field(gt=0.0, le=1.0, description="Height, 0-1 of image height.")
+    """Every field has a default, and it must.
+
+    The shipped compliance law `test_declared_affordances_are_invocable`
+    instantiates `affordance.params()` with no arguments, so a required field
+    would make that law unsatisfiable for any handler declaring this
+    affordance. The defaults describe the whole image, matching WHOLE_IMAGE
+    elsewhere in this module — a no-argument crop is a no-op, not nonsense.
+    """
+
+    x: float = Field(default=0.0, ge=0.0, le=1.0, description="Left edge, 0-1 of image width.")
+    y: float = Field(default=0.0, ge=0.0, le=1.0, description="Top edge, 0-1 of image height.")
+    w: float = Field(default=1.0, gt=0.0, le=1.0, description="Width, 0-1 of image width.")
+    h: float = Field(default=1.0, gt=0.0, le=1.0, description="Height, 0-1 of image height.")
 ```
 
 Replace `affordances()` with:
@@ -1296,7 +1305,15 @@ Add `invoke` and `represent`:
         if self._vision is None:
             raise UnknownAffordanceError("describe_image", (a.name for a in self.affordances()))
         data = await self._source.read_bytes(ref.uri)
-        return await self._vision.describe(data, str(ref.mime), prompt)
+        text = await self._vision.describe(data, str(ref.mime), prompt)
+        if not text.strip():
+            # The port's return type is `str`, so a model that answers with
+            # nothing is a legal implementation — our own adapter raises, but a
+            # third-party one need not. An empty description must not reach an
+            # index as though it were an observation. Treating "raised" as the
+            # only degrade trigger would be silent truncation by another name.
+            raise InfrastructureError(f"vision model returned no description for {ref.uri}")
+        return text
 
     async def invoke(self, ref: SourceRef, name: str, params: BaseModel) -> Rendition:
         match name:
@@ -1570,7 +1587,13 @@ async def test_represent_against_a_real_model_reports_no_degradation(
     perception = _perception(tmp_path, live_vision)
     rendered = await perception.represent("photo.png", Budget(max_chars=None))
     assert rendered.locator_map.length == len(rendered.text)
-    assert not any(d.what == "vision unavailable" for d in rendered.degradations)
+    # The exact set, not a filter for one label: `represent` emits three
+    # distinct degradation labels, and at an unbounded budget a working model
+    # must produce none of them. Filtering for "vision unavailable" alone would
+    # pass silently on the single test meant to prove a real model works.
+    assert rendered.degradations == (), (
+        f"expected no degradations, got: {[d.what for d in rendered.degradations]}"
+    )
 ```
 
 - [ ] **Step 4: Run everything**

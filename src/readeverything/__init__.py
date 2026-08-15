@@ -58,13 +58,16 @@ if TYPE_CHECKING:
     from readeverything.domain.rendition import TextContent as TextContent
     from readeverything.domain.rendition import TranscriptCue as TranscriptCue
     from readeverything.handlers.binary import BinaryHandler as BinaryHandler
+    from readeverything.handlers.image import ImageHandler as ImageHandler
     from readeverything.handlers.text import TextHandler as TextHandler
     from readeverything.pipeline.perception import Perception as Perception
     from readeverything.ports.artifacts import ArtifactStore as ArtifactStore
     from readeverything.ports.detection import MimeDetector as MimeDetector
     from readeverything.ports.handler import MediaHandler as MediaHandler
+    from readeverything.ports.hashing import ContentHashing as ContentHashing
     from readeverything.ports.source import FileSource as FileSource
     from readeverything.ports.source import SourceReader as SourceReader
+    from readeverything.ports.vision import VisionModel as VisionModel
     from readeverything.registry.registry import MimeTypeRegistry as MimeTypeRegistry
     from readeverything.registry.registry import NoHandlerError as NoHandlerError
     from readeverything.testing.artifact_compliance import (
@@ -74,6 +77,7 @@ if TYPE_CHECKING:
     from readeverything.testing.fakes import FakeSource as FakeSource
     from readeverything.testing.fakes import FakeTranscriber as FakeTranscriber
     from readeverything.testing.fakes import FakeVision as FakeVision
+    from readeverything.testing.fakes import FakeVisionRefusing as FakeVisionRefusing
     from readeverything.testing.handler_compliance import (
         MediaHandlerCompliance as MediaHandlerCompliance,
     )
@@ -93,6 +97,7 @@ _LAZY: dict[str, str] = {
     "CharSpan": "readeverything.domain.locators",
     "ContentHash": "readeverything.domain.identity",
     "ContentHasher": "readeverything.adapters.hashing",
+    "ContentHashing": "readeverything.ports.hashing",
     "Degradation": "readeverything.domain.rendition",
     "DetailLevel": "readeverything.domain.affordance",
     "DomainError": "readeverything.domain.errors",
@@ -100,9 +105,11 @@ _LAZY: dict[str, str] = {
     "FakeSource": "readeverything.testing.fakes",
     "FakeTranscriber": "readeverything.testing.fakes",
     "FakeVision": "readeverything.testing.fakes",
+    "FakeVisionRefusing": "readeverything.testing.fakes",
     "FileSource": "readeverything.ports.source",
     "FilesystemArtifactStore": "readeverything.adapters.artifact_store",
     "ImageContent": "readeverything.domain.rendition",
+    "ImageHandler": "readeverything.handlers.image",
     "InMemoryArtifactStore": "readeverything.adapters.artifact_store",
     "InfrastructureError": "readeverything.domain.errors",
     "LocalFileSource": "readeverything.adapters.local_source",
@@ -134,6 +141,7 @@ _LAZY: dict[str, str] = {
     "ToolResult": "readeverything.agent.results",
     "TranscriptCue": "readeverything.domain.rendition",
     "UnknownAffordanceError": "readeverything.domain.errors",
+    "VisionModel": "readeverything.ports.vision",
     "build_tools": "readeverything.agent.tools",
 }
 

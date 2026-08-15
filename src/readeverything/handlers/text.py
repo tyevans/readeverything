@@ -106,18 +106,26 @@ class TextHandler:
         return Rendition(locator=CharSpan(start, end), content=TextContent(text[start:end]))
 
     async def represent(self, ref: SourceRef, budget: Budget) -> Rendered:
-        text, _ = await self._text(ref)
+        full, _ = await self._text(ref)
         degradations: tuple[Degradation, ...] = ()
-        if budget.max_chars is not None and len(text) > budget.max_chars:
+        if not full:
+            # Only a genuinely empty source earns this. A truncated one is not
+            # empty, and saying so would index a false claim about the file.
+            text = f"[empty text file: {ref.uri}]"
+        elif budget.max_chars is not None and len(full) > budget.max_chars:
+            # A zero-width rendition is inexpressible — `CharSpan(0, 0)` raises
+            # and `Rendered` requires `locator_map.length == len(text)` — so a
+            # budget of zero still keeps one character, and the degradation
+            # reports that character rather than the budget it was asked for.
+            text = full[: budget.max_chars] or full[:1]
             degradations = (
                 Degradation(
                     what="text truncated",
-                    detail=f"kept {budget.max_chars} of {len(text)} characters",
+                    detail=f"kept {len(text)} of {len(full)} characters",
                 ),
             )
-            text = text[: budget.max_chars]
-        if not text:
-            text = f"[empty text file: {ref.uri}]"
+        else:
+            text = full
         return Rendered(
             text=text,
             locator_map=LocatorMap.build(

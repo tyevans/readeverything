@@ -112,15 +112,18 @@ class BinaryHandler:
         text = full
         degradations: tuple[Degradation, ...] = ()
         if budget.max_chars is not None and len(full) > budget.max_chars:
+            # A zero-width rendition is inexpressible: `CharSpan(0, 0)` raises,
+            # and `Rendered` requires `locator_map.length == len(text)`. So a
+            # budget of zero still keeps one character, and the degradation must
+            # report the character it kept rather than the budget it was asked
+            # for — otherwise the rendition contradicts its own degradation.
+            text = full[: budget.max_chars] or full[:1]
             degradations = (
                 Degradation(
                     what="text truncated",
-                    detail=f"kept {budget.max_chars} of {len(full)} characters",
+                    detail=f"kept {len(text)} of {len(full)} characters",
                 ),
             )
-            text = full[: budget.max_chars]
-        if not text:
-            text = full[:1]
         return Rendered(
             text=text,
             locator_map=LocatorMap.build(

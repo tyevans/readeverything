@@ -15,7 +15,6 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from readeverything.adapters.hashing import ContentHasher
 from readeverything.domain.affordance import Affordance
 from readeverything.domain.card import Card
 from readeverything.domain.errors import UnknownAffordanceError
@@ -24,6 +23,7 @@ from readeverything.domain.rendition import Budget, Rendered, Rendition
 from readeverything.ports.artifacts import ArtifactStore
 from readeverything.ports.detection import MimeDetector
 from readeverything.ports.handler import MediaHandler
+from readeverything.ports.hashing import ContentHashing
 from readeverything.ports.source import FileSource
 from readeverything.registry.registry import MimeTypeRegistry
 
@@ -38,7 +38,7 @@ class Perception:
         *,
         source: FileSource,
         detector: MimeDetector,
-        hasher: ContentHasher,
+        hasher: ContentHashing,
         registry: MimeTypeRegistry,
         artifacts: ArtifactStore,
     ) -> None:
