@@ -49,3 +49,22 @@ def test_the_normal_case_actually_reaches_the_duration() -> None:
     """Guards against the assertion above being vacuously true for typical input."""
     bounds = tile([0.0, 1.0, 2.5, 4.0], duration_s=5.0, min_width_s=0.001)
     assert bounds[-1][1] == pytest.approx(5.0)
+
+
+def test_the_overshoot_does_not_grow_with_the_number_of_entries() -> None:
+    """The guarantee says "never more, regardless of how many entries are
+    given", so the bound must hold at 2 entries and at 200. An epsilon added
+    once per entry accumulates, which is precisely what this asserts is not
+    happening.
+    """
+    duration_s = 5.0
+    min_width_s = 0.001
+    ceiling = duration_s + min_width_s
+
+    small = tile([4.999, 5.0], duration_s=duration_s, min_width_s=min_width_s)
+    large = tile([4.999] * 200, duration_s=duration_s, min_width_s=min_width_s)
+
+    assert small[-1][1] <= ceiling
+    assert large[-1][1] <= ceiling
+    assert small[-1][1] == pytest.approx(ceiling, abs=1e-12)
+    assert large[-1][1] == pytest.approx(ceiling, abs=1e-12)

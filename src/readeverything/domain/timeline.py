@@ -92,7 +92,9 @@ def tile(
         if index + 1 < len(forced):
             bounds.append((start, forced[index + 1]))
         else:
-            bounds.append((start, max(duration_s, start + min_width_s)))
+            bounds.append(
+                (start, min(max(duration_s, start + min_width_s), duration_s + min_width_s))
+            )
     return tuple(bounds)
 
 
