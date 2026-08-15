@@ -5,6 +5,15 @@ This is its first. Where `pdf.py` maps every character to the page it came
 from, this maps every character to the moment it describes — the same property
 one dimension over, and the reason the locator vocabulary is shared.
 
+A video is two timelines in one file, and with an audio extractor and a
+transcriber injected this reads both: sampled frame descriptions and transcript
+cues are merged into ONE timestamp-ordered sequence, so a citation resolves the
+same way whether it landed on a picture or a sentence. The tiling rule that
+makes that sequence total and gapless is `domain.timeline.tile`, shared with
+`audio.py` rather than copied — see that module. Without a transcriber nothing
+is extracted, nothing is transcribed, and the rendering is exactly what it was
+before the transcript existed.
+
 The card costs a probe and decodes no frame, exactly as the PDF card costs a
 probe and extracts no text. Duration, resolution and stream layout are the
 facts that shape an agent's next move; paying a decode to learn them would
@@ -16,8 +25,8 @@ vision model and merely drops affordances. Without ffmpeg there is no way to
 learn anything at all about a container, so the registry drops this handler
 entirely and video files fall to the binary fallback.
 
-The probe and the extractor arrive by injection. Nothing here imports an
-adapter.
+The probe, the frame extractor, the audio extractor and the transcriber all
+arrive by injection. Nothing here imports an adapter.
 """
 
 from __future__ import annotations
@@ -40,10 +49,14 @@ from readeverything.domain.rendition import (
     Rendered,
     Rendition,
     TextContent,
+    TranscriptCue,
 )
+from readeverything.domain.timeline import clamp_cues_to_duration, tile
+from readeverything.ports.audio import AudioExtractor
 from readeverything.ports.frames import FrameExtractor
 from readeverything.ports.source import SourceReader
 from readeverything.ports.streams import MediaFacts, StreamProbe
+from readeverything.ports.transcription import Transcriber
 from readeverything.ports.vision import VisionModel
 
 #: How often `represent` samples the timeline, in seconds, unless the caller
@@ -64,6 +77,19 @@ FALLBACK_FRAME_DURATION_S = 1.0 / 25.0
 #: `CharSpan` rejects `start >= end`, so a moment whose model returned nothing
 #: would otherwise contribute a zero-width span and break the map.
 MOMENT_SEPARATOR = "\n"
+
+#: What marks a transcript line in the merged timeline. Frame descriptions and
+#: cues are both `[timestamp] text`, and an agent reading the rendition has to
+#: be able to tell what was SEEN from what was SAID — they are different kinds
+#: of evidence with different failure modes, and a citation that conflated them
+#: would attribute speech to a picture.
+SPEECH_MARKER = "(speech)"
+
+#: The mimetype handed to the transcriber. `AudioExtractor.extract` is
+#: specified to return mono 16kHz WAV bytes whatever the container was, so this
+#: describes what is actually passed rather than what was on disk. The same
+#: constant, for the same reason, as `audio.EXTRACTED_MIME`.
+EXTRACTED_MIME = "audio/wav"
 
 _FRAME_PROMPT = "Describe what is visible in this video frame, in one or two sentences."
 
@@ -118,6 +144,8 @@ class VideoHandler:
         probe: StreamProbe,
         frames: FrameExtractor,
         vision: VisionModel | None = None,
+        audio: AudioExtractor | None = None,
+        transcriber: Transcriber | None = None,
         sample_interval_s: float = DEFAULT_SAMPLE_INTERVAL_S,
     ) -> None:
         if sample_interval_s <= 0:
@@ -126,6 +154,8 @@ class VideoHandler:
         self._probe = probe
         self._frames = frames
         self._vision = vision
+        self._audio = audio
+        self._transcriber = transcriber
         self._interval_s = sample_interval_s
 
     def requires(self) -> frozenset[Capability]:
@@ -343,7 +373,7 @@ class VideoHandler:
     def _bounds(
         self, times: tuple[float, ...], facts: MediaFacts
     ) -> tuple[tuple[float, float], ...]:
-        """Each sample owns `[t_i, t_{i+1})`; the last owns `[t_n, duration)`.
+        """Each entry owns `[t_i, t_{i+1})`; the last owns `[t_n, duration)`.
 
         The direct analogue of the PDF handler's page separator: `LocatorMap`
         demands total, gapless coverage, so the stretches BETWEEN sampled
@@ -351,19 +381,14 @@ class VideoHandler:
         starts them. A timeline with holes cannot answer "what was on screen
         at 3.1 seconds".
 
-        The last bound is floored at one frame's duration past its start: a
-        duration that is an exact multiple of the interval, or a rounded
-        duration that lands just below the final sample, would otherwise give
-        a zero- or negative-width `TimeSpan`, which the domain rejects.
+        The rule lives in `domain.timeline.tile` because `AudioHandler` needs
+        exactly the same one for its cues, and `_timeline` needs it a third
+        time for the two MERGED — one rule with three copies is a rule that
+        drifts. `min_width_s` is one frame's duration here, which is what
+        floors the final span when the duration is an exact multiple of the
+        interval or rounds to just below the last sample.
         """
-        frame_duration = self._frame_duration(facts)
-        bounds: list[tuple[float, float]] = []
-        for index, start in enumerate(times):
-            if index + 1 < len(times):
-                bounds.append((start, times[index + 1]))
-            else:
-                bounds.append((start, max(facts.duration_s, start + frame_duration)))
-        return tuple(bounds)
+        return tile(times, duration_s=facts.duration_s, min_width_s=self._frame_duration(facts))
 
     async def represent(self, ref: SourceRef, budget: Budget) -> Rendered:
         facts, path = await self._facts(ref)
@@ -394,45 +419,154 @@ class VideoHandler:
     async def _timeline(
         self, ref: SourceRef, path: str, facts: MediaFacts, budget: Budget
     ) -> Rendered:
+        """One timestamp-ordered sequence of what was seen and what was said.
+
+        The sampled moments and the transcript's cues are merged before
+        anything is tiled, so a citation resolves to the same timeline whether
+        it landed on a picture or on a sentence. WITHOUT A TRANSCRIBER the cue
+        list is empty and every step below reduces to what this handler did
+        before the transcript existed — deliberately, because every other video
+        test in the suite rests on that rendering.
+        """
         times = _sample_times(facts.duration_s, self._interval_s)
-        bounds = self._bounds(times, facts)
+        cues, transcript_degradations = await self._cues(path, facts)
+        entries = _merge(times, cues)
+        bounds = self._bounds(tuple(start for start, _ in entries), facts)
         chunks: list[str] = []
         segments: list[LocatorSegment] = []
-        moment_barriers: list[int] = []
-        moment_offsets: list[int] = []
+        entry_barriers: list[int] = []
+        entry_offsets: list[int] = []
         missing: list[float] = []
         failed: list[float] = []
         cursor = 0
-        for index, (start, end) in enumerate(bounds):
-            body, state = await self._moment(path, start)
-            if state == "missing":
-                missing.append(start)
-            elif state == "failed":
-                failed.append(start)
+        for index, ((sampled_at, cue), (start, end)) in enumerate(
+            zip(entries, bounds, strict=True)
+        ):
+            if cue is None:
+                # The frame is decoded at the moment it was SAMPLED, while the
+                # entry is labelled and located at its tiled start. The two
+                # differ only when a cue shares a frame's instant and tiling
+                # nudges one of them apart; asking ffmpeg for the nudged
+                # timestamp instead would decode a frame nobody asked about.
+                body, state = await self._moment(path, sampled_at)
+                if state == "missing":
+                    missing.append(start)
+                elif state == "failed":
+                    failed.append(start)
+            else:
+                body = _spoken(cue)
             chunk = f"[{_timestamp(start)}] {body}{MOMENT_SEPARATOR}"
             if index:
-                # One barrier per moment boundary: a new moment's first
-                # character is a hard chunk break, so there are exactly as many
-                # barriers as sample count minus one. This is the status quo
-                # `_barriers` falls back to when scene detection finds nothing
-                # to say or fails outright.
-                moment_barriers.append(cursor)
-            moment_offsets.append(cursor)
+                # One barrier per entry boundary: a new entry's first character
+                # is a hard chunk break. This is the status quo `_barriers`
+                # falls back to when scene detection finds nothing to say or
+                # fails outright.
+                entry_barriers.append(cursor)
+            entry_offsets.append(cursor)
             segments.append(
                 LocatorSegment(CharSpan(cursor, cursor + len(chunk)), TimeSpan(start, end))
             )
             cursor += len(chunk)
             chunks.append(chunk)
         barriers, scene_degradation = await self._barriers(
-            path, tuple(t for t, _ in bounds), moment_offsets, moment_barriers
+            path, tuple(t for t, _ in bounds), entry_offsets, entry_barriers
         )
         return self._fit(
             "".join(chunks),
             tuple(segments),
             barriers,
             budget,
-            (*self._timeline_degradations(missing, failed), *scene_degradation),
+            (
+                *self._timeline_degradations(missing, failed),
+                *transcript_degradations,
+                *scene_degradation,
+            ),
         )
+
+    async def _cues(
+        self, path: str, facts: MediaFacts
+    ) -> tuple[tuple[TranscriptCue, ...], tuple[Degradation, ...]]:
+        """The transcript to merge in, and everything that went wrong getting it.
+
+        NOTHING IS ATTEMPTED WITHOUT A TRANSCRIBER, and no degradation is
+        reported for its absence. A video with no transcriber configured is not
+        a degraded video — it is this handler's whole prior behaviour, and
+        `describe()` never promised speech. Contrast `_timeline_degradations`,
+        which does report a missing vision model: there the affordance was
+        offered and the frames were sampled anyway, so the silence needs
+        explaining. Here nothing was ever going to be asked.
+
+        Every other outcome degrades and reports. `AudioExtractor.extract` is
+        specified never to raise, but it is an injected implementation and this
+        handler's contract is that it never raises about its input, so the call
+        is guarded rather than trusted.
+        """
+        if self._transcriber is None:
+            return (), ()
+        if self._audio is None:
+            return (), (
+                Degradation(
+                    what="audio track unavailable",
+                    detail=(
+                        "a transcriber is configured but no audio extractor is, so the "
+                        "video's audio track could not be reached; the timeline reports "
+                        "its frames only"
+                    ),
+                ),
+            )
+        try:
+            audio = await self._audio.extract(path)
+        except Exception:
+            audio = None
+        if audio is None:
+            return (), (
+                Degradation(
+                    what="audio track unavailable",
+                    detail=(
+                        "no audio track could be extracted from the video, so there was "
+                        "nothing to transcribe; the timeline reports its frames only"
+                    ),
+                ),
+            )
+        try:
+            transcribed = await self._transcriber.transcribe(audio, EXTRACTED_MIME)
+        except Exception as exc:
+            return (), (
+                Degradation(
+                    what="transcription failed",
+                    detail=(
+                        f"the transcriber could not transcribe the video's audio ({exc}); "
+                        "the timeline reports its frames only"
+                    ),
+                ),
+            )
+        cues, dropped = clamp_cues_to_duration(transcribed, facts.duration_s)
+        degradations: list[Degradation] = []
+        if dropped:
+            degradations.append(
+                Degradation(
+                    what="cues outside the file",
+                    detail=(
+                        f"{dropped} cue(s) started at or after the probed duration of "
+                        f"{facts.duration_s:g}s and were dropped; the transcriber and the "
+                        "probe disagree about how long this file is"
+                    ),
+                )
+            )
+        if not cues:
+            # A transcriber that ran and heard nothing is a different fact from
+            # an absent transcriber, and the timeline says so rather than
+            # rendering identically to the untranscribed case.
+            degradations.append(
+                Degradation(
+                    what="no speech detected",
+                    detail=(
+                        "the transcriber ran over the whole track and returned no usable "
+                        "cues; the audio is silent or contains no intelligible speech"
+                    ),
+                )
+            )
+        return cues, tuple(degradations)
 
     async def _barriers(
         self,
@@ -607,6 +741,41 @@ class VideoHandler:
                 ),
             ),
         )
+
+
+def _merge(
+    times: tuple[float, ...], cues: tuple[TranscriptCue, ...]
+) -> tuple[tuple[float, TranscriptCue | None], ...]:
+    """The sampled moments and the cues in one timestamp-ordered sequence.
+
+    A frame description and a cue at the same instant are TWO ENTRIES, not a
+    conflict: they say different things about that moment, and merging them
+    into one line would force a choice about which evidence outranks the other
+    that nothing here is in a position to make. `domain.timeline.tile` gives
+    the second of the pair a start one frame's width later, which is what keeps
+    both spans non-empty.
+
+    The sort is stable and frames sort first at a tie, so a frame keeps the
+    exact timestamp it was decoded at and the cue is the one nudged. That
+    direction matters: the frame's timestamp is a request this handler made of
+    ffmpeg, while the cue's is a measurement someone else reported.
+    """
+    entries: list[tuple[float, TranscriptCue | None]] = [(t, None) for t in times]
+    entries.extend((cue.span.start_s, cue) for cue in cues)
+    entries.sort(key=lambda entry: (entry[0], entry[1] is not None))
+    return tuple(entries)
+
+
+def _spoken(cue: TranscriptCue) -> str:
+    """One cue as a line of the merged timeline, marked as speech."""
+    speaker = f"{cue.speaker} " if cue.speaker is not None else ""
+    body = " ".join(cue.text.split())
+    if not body:
+        # `TranscriptCue.text` is a `str`, so a transcriber emitting an empty
+        # one is a legal implementation. It must not reach an index as though
+        # something had been heard.
+        return f"{SPEECH_MARKER} (the transcriber returned no text for this cue)"
+    return f"{SPEECH_MARKER} {speaker}{body}"
 
 
 def _listed(times: list[float], limit: int = 10) -> str:

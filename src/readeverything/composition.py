@@ -91,7 +91,9 @@ def _optional_pdf_handler(source: SourceReader, vision: VisionModel | None) -> l
     return [PdfHandler(source=source, probe=PdfiumProbe(), recognizer=recognizer)]
 
 
-def _video_handler(source: SourceReader, vision: VisionModel | None) -> list[MediaHandler]:
+def _video_handler(
+    source: SourceReader, vision: VisionModel | None, transcriber: Transcriber | None
+) -> list[MediaHandler]:
     """`VideoHandler`, unconditionally.
 
     Unlike `_optional_image_handler`/`_optional_pdf_handler`, there is no
@@ -101,12 +103,24 @@ def _video_handler(source: SourceReader, vision: VisionModel | None) -> list[Med
     it survives — the same "tool exists but returns sorry" trap that guards
     an import here would otherwise reintroduce.
     """
+    from readeverything.adapters.ffmpeg_audio import FfmpegAudio
     from readeverything.adapters.ffmpeg_frames import FfmpegFrames
     from readeverything.adapters.ffprobe_streams import FfprobeStreams
     from readeverything.handlers.video import VideoHandler
 
+    # The extractor is wired unconditionally alongside the transcriber. It costs
+    # nothing to construct, and `VideoHandler` never touches it without a
+    # transcriber to hand its bytes to — so a caller who configured ASR gets a
+    # transcript on the video timeline without a second knob to find.
     return [
-        VideoHandler(source=source, probe=FfprobeStreams(), frames=FfmpegFrames(), vision=vision)
+        VideoHandler(
+            source=source,
+            probe=FfprobeStreams(),
+            frames=FfmpegFrames(),
+            vision=vision,
+            audio=FfmpegAudio(),
+            transcriber=transcriber,
+        )
     ]
 
 
@@ -155,7 +169,7 @@ async def build_perception(
         TextHandler(source=source),
         *_optional_image_handler(source, vision),
         *_optional_pdf_handler(source, vision),
-        *_video_handler(source, vision),
+        *_video_handler(source, vision, transcriber),
         *_audio_handler(source, transcriber),
         # The fallback claims "*", so it must be last: the registry breaks a
         # rank tie by registration order, and a fallback registered first would

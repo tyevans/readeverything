@@ -30,7 +30,6 @@ here imports an adapter.
 
 from __future__ import annotations
 
-from dataclasses import replace
 from typing import ClassVar
 
 from pydantic import BaseModel, Field
@@ -50,6 +49,7 @@ from readeverything.domain.rendition import (
     TextContent,
     TranscriptCue,
 )
+from readeverything.domain.timeline import clamp_cues_to_duration, tile
 from readeverything.ports.audio import AudioExtractor
 from readeverything.ports.source import SourceReader
 from readeverything.ports.streams import MediaFacts, StreamProbe
@@ -99,66 +99,15 @@ def _cue_bounds(
 ) -> tuple[tuple[float, float], ...]:
     """Each cue owns `[start_i, start_{i+1})`; the last owns `[start_n, duration)`.
 
-    A transcript has SILENCE between its cues — people stop talking — and
-    `LocatorMap` must be total, gapless and zero-start, so the stretches
-    between cues have to belong to somebody. They belong to the cue that most
-    recently spoke: a citation landing in a pause resolves to the utterance
-    before it, which is the reading a person scrubbing a transcript would make
-    anyway. This is exactly `VideoHandler._bounds`, one medium over.
-
-    THE FIRST CUE STARTS AT 0.0 regardless of where the transcriber said the
-    speech began — whisper's first cue is often a second or two in. The
-    opening span includes that lead-in silence because the map is of the FILE,
-    not of the speech.
-
-    No explicit "(silence)" segment is emitted for a gap. That would need a
-    silence-detection pass with thresholds and false positives — a second
-    inference-shaped decision stacked on transcription — and would put text in
-    an index describing something nothing measured.
-
-    Starts are forced strictly increasing. Cues are specified as ordered and
-    non-overlapping, but a transcriber emitting two at the same timestamp is a
-    legal implementation, and a zero-width `TimeSpan` is not.
+    A transcript has SILENCE between its cues — people stop talking — and the
+    stretches between them have to belong to somebody. The rule itself lives in
+    `domain.timeline.tile`, because `VideoHandler` applies exactly the same one
+    to its sampled frames and to the two merged; see that module for why the
+    first cue starts at 0.0 and why starts are forced strictly increasing.
     """
-    starts: list[float] = []
-    for index, cue in enumerate(cues):
-        if index == 0:
-            starts.append(0.0)
-        else:
-            starts.append(max(cue.span.start_s, starts[-1] + MIN_CUE_SPAN_S))
-    bounds: list[tuple[float, float]] = []
-    for index, start in enumerate(starts):
-        if index + 1 < len(starts):
-            bounds.append((start, starts[index + 1]))
-        else:
-            bounds.append((start, max(duration_s, start + MIN_CUE_SPAN_S)))
-    return tuple(bounds)
-
-
-def _clamp_to_duration(
-    cues: tuple[TranscriptCue, ...], duration_s: float
-) -> tuple[tuple[TranscriptCue, ...], int]:
-    """The cues that the probed file actually has room for, and how many it did not.
-
-    A transcriber is free to disagree with the probe about how long a file is,
-    and when it does, one of them is wrong. A cue that merely OVERHANGS the end
-    is truncated: the utterance did happen, and only its tail is in dispute. A
-    cue that STARTS at or past the duration is dropped entirely — keeping it
-    would put a locator on a moment the file does not contain, which is exactly
-    the claim this library exists not to make.
-
-    The count of dropped cues is returned rather than swallowed so
-    `represent()` can report the disagreement as a `Degradation`. Silently
-    discarding them would hide the fact that the two measurements differ.
-    """
-    kept = tuple(cue for cue in cues if cue.span.start_s < duration_s)
-    clamped = tuple(
-        cue
-        if cue.span.end_s <= duration_s
-        else replace(cue, span=TimeSpan(cue.span.start_s, duration_s))
-        for cue in kept
+    return tile(
+        (cue.span.start_s for cue in cues), duration_s=duration_s, min_width_s=MIN_CUE_SPAN_S
     )
-    return clamped, len(cues) - len(kept)
 
 
 class AudioHandler:
@@ -409,7 +358,7 @@ class AudioHandler:
                 detail=f"the transcriber could not transcribe the audio ({exc})",
                 span=TimeSpan(0.0, facts.duration_s),
             )
-        cues, dropped = _clamp_to_duration(cues, facts.duration_s)
+        cues, dropped = clamp_cues_to_duration(cues, facts.duration_s)
         if dropped and not cues:
             return self._nothing_to_read(
                 ref,
