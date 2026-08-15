@@ -3,8 +3,18 @@
 **Target:** `redstring`
 **Raised by:** `deepagents-read-everything` (see
 `docs/superpowers/specs/2026-08-14-readeverything-perception-core-design.md` §9)
-**Status:** Proposed
-**Blocking:** yes — the perception core's citation path depends on it
+**Status:** Proposed, revised after the producing side was built
+**Blocking:** the query interface (Spec 2) only. The perception core shipped
+without it — `Rendered` carries text, locators and barriers in its own types,
+so nothing in `readeverything` waits on this. What waits is turning a `Rendered`
+into a `SourceDocument` redstring can chunk without losing where the text came
+from.
+
+**What the revision changed:** barriers moved off `SourceSpan` and onto
+`SourceDocument`, because building the producer proved a barrier need not fall
+on a span boundary. Details in R1/R2 below. The rest of the RFC — opaque
+payloads, accumulation for repeated text, provenance reaching retrieval —
+survived contact with the implementation unchanged.
 
 ---
 
@@ -115,14 +125,28 @@ class SourceSpan(BaseModel):
     start_char: int          # inclusive
     end_char: int            # exclusive
     payload: Mapping[str, JsonSafe]
-    barrier: bool = False
 ```
 
 ```python
 class SourceDocument(BaseModel):
     ...
     spans: tuple[SourceSpan, ...] = ()
+    barriers: tuple[int, ...] = ()
 ```
+
+**Revised after building the producing side.** An earlier draft put
+`barrier: bool` on `SourceSpan` and derived barriers from the spans carrying it.
+That is wrong, and the perception core proved it: **a barrier need not fall on a
+span boundary.** A scene cut can land mid-utterance — someone keeps talking
+across the cut — so the barrier belongs inside a transcript cue's span, not at
+its edge. Chunking there is still correct, because both halves resolve to the
+same cue.
+
+Barriers are therefore an independent sorted sequence of offsets, which also
+makes the producing side a field-for-field transfer: `readeverything`'s
+`Rendered(text, locator_map, barriers, degradations)` maps directly onto
+`SourceDocument(text, spans, barriers)`, with `locator_map`'s segments becoming
+spans. No translation layer, and nothing to get subtly wrong in the middle.
 
 Validation, at construction, where the offending value is in hand:
 
@@ -152,9 +176,8 @@ def chunk(
 ```
 
 A barrier is an offset at which a cut is **mandatory**: no chunk may contain
-text from both sides of it. Barriers are derived by the caller-facing layer from
-spans with `barrier=True` (their `start_char`), so a caller never passes them
-directly.
+text from both sides of it. They come from `SourceDocument.barriers`, sorted and
+unique, and are independent of span boundaries (see the revision note above).
 
 This fits both existing chunkers with no change to their character:
 
@@ -286,6 +309,9 @@ is why the compliance suite gains a barrier case (below).
 
 - [ ] `SourceSpan` validates bounds, ordering, non-overlap and payload
       storability at construction, with a test per rule.
+- [ ] `SourceDocument.barriers` validates that offsets lie within the text and
+      are sorted and unique — and explicitly does NOT require them to coincide
+      with span boundaries, with a test pinning a mid-span barrier as legal.
 - [ ] Property test: for any text and any valid barrier set, no chunk contains
       text from both sides of a barrier.
 - [ ] Property test: the partition remains lossless with barriers — concatenating
