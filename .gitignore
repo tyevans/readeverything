@@ -9,3 +9,6 @@ wheels/
 # Virtual environments
 .venv
 .coverage
+
+# Test media. Large binaries, and not ours to redistribute.
+media/
