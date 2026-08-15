@@ -17,6 +17,7 @@ CONFINED: dict[str, set[str]] = {
     "langchain_openai": {"adapters/vision_langchain.py"},
     "puremagic": {"adapters/detection.py"},
     "charset_normalizer": {"handlers/text.py"},
+    "PIL": {"handlers/image.py"},
     "subprocess": set(),
 }
 
