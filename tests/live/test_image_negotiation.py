@@ -58,10 +58,17 @@ async def test_a_real_model_describes_a_real_image(
 async def test_represent_against_a_real_model_reports_no_degradation(
     tmp_path: Path, live_vision: LangChainVisionModel
 ) -> None:
-    """If the real model answers, nothing should claim vision was unavailable."""
+    """If the real model answers, nothing should be degraded at all.
+
+    Asserting the exact set rather than filtering for one label: a degradation
+    under any other name would otherwise pass silently, on the one test that
+    is meant to prove a real model works.
+    """
     from readeverything.domain.rendition import Budget
 
     perception = _perception(tmp_path, live_vision)
     rendered = await perception.represent("photo.png", Budget(max_chars=None))
     assert rendered.locator_map.length == len(rendered.text)
-    assert not any(d.what == "vision unavailable" for d in rendered.degradations)
+    assert rendered.degradations == (), (
+        f"expected no degradations, got: {[d.what for d in rendered.degradations]}"
+    )
