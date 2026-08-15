@@ -22,7 +22,34 @@ from collections.abc import Mapping
 from typing import Any
 
 from readeverything.domain.capability import CapabilitySet
+from readeverything.domain.errors import DomainError
 from readeverything.domain.identity import ContentHash
+
+_PRIMITIVES = (str, int, float, bool, type(None))
+
+
+def _reject_non_primitives(value: Any, path: str) -> None:
+    """Refuse anything `json.dumps` could not represent losslessly.
+
+    The alternative was `default=str`, which silently coerced. That made
+    `{"path": Path("a")}` and `{"path": "a"}` the same cache key — two different
+    derivations sharing one artifact, which is the worst failure this component
+    has. Refusing is louder and the caller has the information to fix it.
+    """
+    if isinstance(value, _PRIMITIVES):
+        return
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            _reject_non_primitives(item, f"{path}.{key}")
+        return
+    if isinstance(value, (list, tuple)):
+        for index, item in enumerate(value):
+            _reject_non_primitives(item, f"{path}[{index}]")
+        return
+    raise DomainError(
+        f"cache key param {path} is not JSON-primitive: {type(value).__name__}. "
+        f"Affordance params must be JSON-representable so the key is stable."
+    )
 
 
 def artifact_key(
@@ -35,6 +62,7 @@ def artifact_key(
     capabilities: CapabilitySet,
 ) -> str:
     """A stable digest of one derivation."""
+    _reject_non_primitives(dict(params), "params")
     payload = json.dumps(
         {
             "content_hash": str(content_hash),
@@ -46,6 +74,5 @@ def artifact_key(
         },
         sort_keys=True,
         separators=(",", ":"),
-        default=str,
     )
     return hashlib.blake2b(payload.encode("utf-8"), digest_size=32).hexdigest()
