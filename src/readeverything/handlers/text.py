@@ -31,6 +31,11 @@ from readeverything.ports.source import SourceReader
 
 _EXCERPT_CHARS = 1000
 
+#: `Degradation.what` for text the handler wrote about a file rather than
+#: extracted from it. See `binary.SYNTHESIZED` — the same string, deliberately,
+#: so a consumer matches one value across every handler.
+SYNTHESIZED = "synthesized description"
+
 
 class ReadRangeParams(BaseModel):
     start: int = Field(default=0, ge=0)
@@ -112,6 +117,12 @@ class TextHandler:
             # Only a genuinely empty source earns this. A truncated one is not
             # empty, and saying so would index a false claim about the file.
             text = f"[empty text file: {ref.uri}]"
+            degradations = (
+                Degradation(
+                    what=SYNTHESIZED,
+                    detail="the file is empty; this text describes it",
+                ),
+            )
         elif budget.max_chars is not None and len(full) > budget.max_chars:
             # A zero-width rendition is inexpressible — `CharSpan(0, 0)` raises
             # and `Rendered` requires `locator_map.length == len(text)` — so a

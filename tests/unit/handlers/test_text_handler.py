@@ -11,12 +11,12 @@ from readeverything.testing.handler_compliance import MediaHandlerCompliance
 CONTENT = b"alpha\nbeta\ngamma\n"
 
 
-def _ref() -> SourceRef:
+def _ref(*, uri: str = "a.txt", size_bytes: int = len(CONTENT)) -> SourceRef:
     return SourceRef(
-        uri="a.txt",
+        uri=uri,
         mime=MimeType.parse("text/plain"),
         content_hash=ContentHash("a" * 64),
-        size_bytes=len(CONTENT),
+        size_bytes=size_bytes,
     )
 
 
@@ -137,7 +137,26 @@ async def test_a_genuinely_empty_file_keeps_its_placeholder() -> None:
     """Guard against fixing the false-empty claim by deleting the true one."""
     rendered = await _empty_handler().represent(_empty_ref(), Budget(max_chars=None))
     assert rendered.text == "[empty text file: empty.txt]"
-    assert rendered.degradations == ()
+    assert any(d.what == "synthesized description" for d in rendered.degradations)
+
+
+async def test_the_empty_file_placeholder_announces_that_it_is_synthesized() -> None:
+    """`[empty text file: x]` is 24 characters mapped over a file of zero.
+
+    The placeholder is correct behaviour and must stay. What must not stay is
+    an indexer being unable to tell that those characters are not in the file.
+    """
+    handler = TextHandler(source=FakeSource({"empty.txt": b""}))
+    rendered = await handler.represent(_ref(uri="empty.txt", size_bytes=0), Budget(max_chars=None))
+    assert rendered.text.startswith("[empty text file:")
+    assert any(d.what == "synthesized description" for d in rendered.degradations)
+
+
+async def test_extracted_text_is_not_announced_as_synthesized() -> None:
+    """The marker must distinguish. A marker on everything distinguishes nothing."""
+    handler = TextHandler(source=FakeSource({"real.txt": b"actual file content"}))
+    rendered = await handler.represent(_ref(uri="real.txt", size_bytes=19), Budget(max_chars=None))
+    assert not any(d.what == "synthesized description" for d in rendered.degradations)
 
 
 class TestTextHandlerCompliance(MediaHandlerCompliance):

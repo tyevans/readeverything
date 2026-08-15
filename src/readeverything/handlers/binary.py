@@ -34,6 +34,12 @@ from readeverything.ports.source import SourceReader
 _EXCERPT_BYTES = 64
 _BYTES_PER_LINE = 16
 
+#: `Degradation.what` for text the handler wrote about a file rather than
+#: extracted from it. A consumer that indexes renditions must be able to tell
+#: the difference, because attributing synthesized text to file content is a
+#: false claim about the file.
+SYNTHESIZED = "synthesized description"
+
 
 class HexdumpParams(BaseModel):
     start: int = Field(default=0, ge=0)
@@ -110,7 +116,16 @@ class BinaryHandler:
             f"No textual content could be extracted."
         )
         text = full
-        degradations: tuple[Degradation, ...] = ()
+        # Every byte of this rendition was written here, not read from the
+        # file. The locator below points into the file because `Rendered`
+        # requires a map whose length matches the text; this degradation is
+        # what stops that from reading as a claim about the file's contents.
+        degradations: tuple[Degradation, ...] = (
+            Degradation(
+                what=SYNTHESIZED,
+                detail="no content was extracted; this text describes the file",
+            ),
+        )
         if budget.max_chars is not None and len(full) > budget.max_chars:
             # A zero-width rendition is inexpressible: `CharSpan(0, 0)` raises,
             # and `Rendered` requires `locator_map.length == len(text)`. So a

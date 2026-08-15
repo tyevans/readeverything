@@ -9,12 +9,12 @@ from readeverything.testing.handler_compliance import MediaHandlerCompliance
 CONTENT = bytes(range(64))
 
 
-def _ref() -> SourceRef:
+def _ref(*, uri: str = "blob.bin", size_bytes: int = len(CONTENT)) -> SourceRef:
     return SourceRef(
-        uri="blob.bin",
+        uri=uri,
         mime=MimeType.parse("application/octet-stream"),
         content_hash=ContentHash("c" * 64),
-        size_bytes=len(CONTENT),
+        size_bytes=size_bytes,
     )
 
 
@@ -35,6 +35,31 @@ async def test_hexdump_returns_the_requested_window() -> None:
     assert isinstance(rendition.content, TextContent)
     assert rendition.content.text.startswith("00000000")
     assert "00 01 02 03" in rendition.content.text
+
+
+async def test_a_binary_representation_announces_that_it_is_synthesized() -> None:
+    """The text describes the file; it was not extracted from it.
+
+    Nothing in the bytes says "No textual content could be extracted" — the
+    handler wrote that. A consumer indexing this must be able to tell it apart
+    from text that actually came out of the file, because attributing it to the
+    file's content is a false claim about the file.
+    """
+    rendered = await _handler().represent(_ref(), Budget(max_chars=None))
+    assert any(d.what == "synthesized description" for d in rendered.degradations)
+
+
+async def test_an_empty_binary_file_does_not_claim_a_byte_that_is_not_there() -> None:
+    """`ByteRange(0, max(1, size))` invents byte 0 for a 0-byte file.
+
+    The `max(1, ...)` exists because ByteRange rejects start >= end, so the
+    fabrication is structural rather than careless — which is exactly why it
+    needs announcing rather than silently patching.
+    """
+    handler = BinaryHandler(source=FakeSource({"empty.bin": b""}))
+    ref = _ref(uri="empty.bin", size_bytes=0)
+    rendered = await handler.represent(ref, Budget(max_chars=None))
+    assert any(d.what == "synthesized description" for d in rendered.degradations)
 
 
 async def test_represent_describes_rather_than_dumping() -> None:
