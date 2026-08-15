@@ -38,3 +38,29 @@ async def test_escaping_the_root_is_refused(tmp_path: Path) -> None:
 async def test_a_missing_file_raises_the_domain_error(tmp_path: Path) -> None:
     with pytest.raises(SourceUnreadableError):
         await LocalFileSource(root=tmp_path).read_bytes("nope.txt")
+
+
+async def test_size_of_an_unreadable_path_raises_source_unreadable(tmp_path: Path) -> None:
+    source = LocalFileSource(root=tmp_path)
+    with pytest.raises(SourceUnreadableError):
+        await source.size("does-not-exist.txt")
+
+
+async def test_walking_a_missing_directory_raises_source_unreadable(tmp_path: Path) -> None:
+    source = LocalFileSource(root=tmp_path)
+    with pytest.raises(SourceUnreadableError):
+        await source.walk("no-such-dir")
+
+
+async def test_streaming_a_missing_file_raises_and_leaves_no_handle_open(
+    tmp_path: Path,
+) -> None:
+    """The `finally: close()` has never run under an error.
+
+    A leaked handle per failed stream is the kind of defect that only shows up
+    under load, which is the worst time to find it.
+    """
+    source = LocalFileSource(root=tmp_path)
+    with pytest.raises(SourceUnreadableError):
+        async for _ in source.stream("missing.bin", chunk_size=8):
+            pass
