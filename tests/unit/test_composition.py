@@ -11,7 +11,9 @@ import pytest
 from readeverything.composition import build_perception
 from readeverything.domain.capability import Capability, CapabilitySet
 from readeverything.domain.errors import DomainError
-from readeverything.testing.fakes import FakeVision
+from readeverything.handlers.audio import AudioHandler
+from readeverything.handlers.video import VideoHandler
+from readeverything.testing.fakes import CountingLimiter, FakeVision, RecordingObserver
 
 
 def _png_bytes() -> bytes:
@@ -152,3 +154,36 @@ async def test_no_ffmpeg_means_no_video_handler(
         tmp_path, capabilities=CapabilitySet.empty(), probe_binaries=False
     )
     assert "VideoHandler" not in {type(h).__name__ for h in perception.registry.handlers}
+
+
+async def test_an_observer_and_a_limiter_reach_the_media_handlers(tmp_path: Path) -> None:
+    """Threaded, not just accepted: `build_perception` must not swallow either.
+
+    Reads the handlers' private attributes rather than exercising a full
+    read — this is `build_perception`'s job of wiring, not a behavioural test
+    of either handler, which already has its own.
+    """
+    observer = RecordingObserver()
+    limiter = CountingLimiter()
+    perception = await build_perception(
+        tmp_path,
+        capabilities=CapabilitySet.of({Capability.FFMPEG: "1"}),
+        observer=observer,
+        limiter=limiter,
+    )
+    handlers = {type(h).__name__: h for h in perception.registry.handlers}
+    video = handlers["VideoHandler"]
+    audio = handlers["AudioHandler"]
+    assert isinstance(video, VideoHandler)
+    assert isinstance(audio, AudioHandler)
+    assert video._observer is observer  # noqa: SLF001
+    assert video._limiter is limiter  # noqa: SLF001
+    assert audio._observer is observer  # noqa: SLF001
+
+
+async def test_defaults_change_nothing(tmp_path: Path) -> None:
+    """No observer, no limiter — today's behaviour exactly."""
+    (tmp_path / "a.txt").write_text("hello")
+    perception = await build_perception(tmp_path, probe_binaries=False)
+    card = await perception.inspect("a.txt")
+    assert card.ref.uri == "a.txt"
