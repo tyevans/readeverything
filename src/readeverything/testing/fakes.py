@@ -9,7 +9,9 @@ happened to say. Model quality is a bench concern, not a test concern.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Mapping, Sequence
+from contextlib import asynccontextmanager
 
+from readeverything.domain.capability import Capability
 from readeverything.domain.errors import InfrastructureError
 from readeverything.domain.locators import TimeSpan
 from readeverything.domain.observation import Event
@@ -160,3 +162,25 @@ class RaisingObserver:
 
     def observe(self, event: Event) -> None:
         raise RuntimeError("this observer always fails")
+
+
+class CountingLimiter:
+    """Tracks peak in-flight count per capability, without bounding anything.
+
+    A handler test that wants to assert "at most N of this ran at once"
+    without pulling in `asyncio.Semaphore` semantics uses this instead: it
+    records concurrency rather than enforcing it.
+    """
+
+    def __init__(self) -> None:
+        self.in_flight: dict[Capability, int] = {}
+        self.peak: dict[Capability, int] = {}
+
+    @asynccontextmanager
+    async def limit(self, capability: Capability) -> AsyncIterator[None]:
+        self.in_flight[capability] = self.in_flight.get(capability, 0) + 1
+        self.peak[capability] = max(self.peak.get(capability, 0), self.in_flight[capability])
+        try:
+            yield
+        finally:
+            self.in_flight[capability] -= 1

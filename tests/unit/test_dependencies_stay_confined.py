@@ -45,6 +45,8 @@ CONFINED: dict[str, set[str]] = {
         # whisper's transcribe() is synchronous and CPU-bound; run in a
         # thread so it doesn't block the event loop.
         "adapters/whisper_transcriber.py",
+        # asyncio.Semaphore bounds per-capability concurrency.
+        "adapters/semaphore_limiter.py",
     },
     # shutil.which locates the executable a capability probe is about to run;
     # confined to the one adapter that probes binaries.
