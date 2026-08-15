@@ -34,6 +34,7 @@ from readeverything.handlers.video import (
     FrameAtParams,
     VideoHandler,
     WatchSegmentParams,
+    _clip_cost,
     _spoken,
 )
 from readeverything.ports.frames import FrameExtractor
@@ -1410,10 +1411,14 @@ async def test_the_locator_is_the_range_requested(sample_video: str) -> None:
 
 
 async def test_a_segment_over_the_cap_is_refused_with_its_cost(sample_video: str) -> None:
-    """Refused, not truncated. Cost is ~2,180 tokens per second and cannot be
-    reduced client-side, so a ten-minute request is 1.3M tokens. Quietly
-    watching the first 30 seconds and reporting success would be a claim about
-    time the model never saw, and the caller could not tell."""
+    """Refused, not truncated. Quietly watching the first 30 seconds of a
+    ten-minute range and reporting success would be a claim about time the
+    model never saw, and the caller could not tell.
+
+    The message must not extrapolate: 600s was MEASURED at 88,041 tokens,
+    where multiplying the sub-40s rate would have predicted 1,308,000. A
+    refusal quoting a fabricated cost teaches a caller something false about
+    the system they are trying to use."""
     watcher = FakeClipModel()
     clips = _StubClips()
     handler = _handler(sample_video, vision=FakeVision(), clips=clips, watcher=watcher)
@@ -1422,7 +1427,7 @@ async def test_a_segment_over_the_cap_is_refused_with_its_cost(sample_video: str
     )
     assert result.degraded is True
     assert "30" in result.content.text
-    assert "1,308,000" in result.content.text
+    assert "88,033" in result.content.text  # the plateau, not an extrapolation
     assert watcher.calls == 0, "the model was called despite the cap"
     assert clips.calls == [], "a clip was cut despite the cap"
 
@@ -1507,3 +1512,20 @@ async def test_invoking_an_unoffered_watch_segment_raises(sample_video: str) -> 
         await _handler(sample_video, vision=FakeVision()).invoke(
             _ref(), "watch_segment", WatchSegmentParams()
         )
+
+
+def test_a_short_clip_cost_is_quoted_as_an_estimate() -> None:
+    """Below the linear limit the measurements are a straight line — 20s=42,487,
+    30s=63,200, 40s=83,887 — so a figure here is a real estimate."""
+    assert _clip_cost(30.0) == "about 63,000 prompt tokens"
+
+
+def test_a_long_clip_cost_is_not_extrapolated() -> None:
+    """Above ~40s the line stops. 60s, 300s and 1200s all measured at exactly
+    88,033, and 120s at 218,435. Multiplying the rate would have predicted
+    1,308,000 for a 600s clip whose real cost is 88,041 — a number this code
+    used to print."""
+    message = _clip_cost(600.0)
+    assert "88,033" in message
+    assert "1,260,000" not in message
+    assert "at least" in message

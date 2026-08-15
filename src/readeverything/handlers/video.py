@@ -138,18 +138,45 @@ class FrameAtParams(BaseModel):
     )
 
 
-#: Measured against llama.cpp b10438 serving qwen3.8-27b-mtp on 2026-08-15: a
-#: 2-second clip cost 5,242 prompt tokens and a 10-second clip 21,787. Crucially,
-#: re-encoding the source to a lower frame rate changed NOTHING — the server
-#: resamples by timestamp, so cost is a function of DURATION alone and a caller
-#: cannot turn it down. That is what makes the cap below load-bearing rather
-#: than a tuning knob.
-TOKENS_PER_CLIP_SECOND = 2180
+#: Prompt tokens per second of clip, VALID ONLY BELOW ~40 SECONDS.
+#:
+#: Measured against llama.cpp b10438 serving qwen3.8-27b-mtp on 2026-08-15:
+#: 20s=42,487, 25s=52,850, 30s=63,200, 35s=73,550, 40s=83,887 — a straight line
+#: at ~2,100/s. Re-encoding the source to a lower frame rate changes nothing;
+#: the server resamples by timestamp, so a caller cannot turn the rate down.
+#:
+#: ABOVE ~40s THE LINE STOPS. 60s, 300s and 1200s all cost exactly 88,033,
+#: which is a frame cap (~80 frames) rather than a rate — it is how the model
+#: claims to handle hour-scale video. 120s costs 218,435 and fits neither
+#: pattern; that outlier is unexplained and is the reason nothing here
+#: extrapolates past the measured range.
+#:
+#: An earlier version of this constant was used to predict 1,308,000 tokens for
+#: a 600s clip. The real figure is 88,041. Do not extrapolate this number.
+TOKENS_PER_CLIP_SECOND = 2100
 
-#: The default ceiling on one `watch_segment`, about 65k prompt tokens. A
-#: request past it is refused rather than truncated: a watch that silently
-#: covered the first 30 seconds of a ten-minute range and reported success
-#: would be a claim about time the model never saw.
+#: Above this, a clip stops being linear and the measurements stop being a
+#: guide. Quoting a cost past here would be inventing one.
+LINEAR_CLIP_LIMIT_S = 40.0
+
+#: What a clip costs once past `LINEAR_CLIP_LIMIT_S` — flat, whatever the
+#: duration. Above every context window this project has met, which is why a
+#: long clip is refused rather than merely expensive.
+PLATEAU_CLIP_TOKENS = 88_033
+
+#: The default ceiling on one `watch_segment`.
+#:
+#: NOT a round number chosen for taste: 30s measured at 63,200 prompt tokens
+#: against the reference server's `n_ctx` of 65,536, and 35s measured at 73,550
+#: and was refused by the server. The true limit sits between, and 30s is the
+#: largest tested value that fits.
+#:
+#: THE MARGIN IS THIN — about 2,300 tokens, near a second of video — and the
+#: prompt shares it. A caller passing a long custom prompt can push a legal
+#: clip over the server's window; the handler degrades rather than raising when
+#: that happens, but the answer is lost. A caller on a server with a larger
+#: context should raise `max_clip_s`, and one on a smaller context must lower
+#: it: this default describes one measured configuration, not a law.
 MAX_CLIP_SECONDS = 30.0
 
 _WATCH_PROMPT = "Describe what happens in this video segment, including any motion or change."
@@ -440,18 +467,16 @@ class VideoHandler:
                 f"to {_timestamp(end_s)}",
             )
         if span_s > self._max_clip_s:
-            # REFUSED, NOT TRUNCATED. Cost is ~2,180 prompt tokens per second
-            # of duration and cannot be reduced from the client, so a
-            # ten-minute request is 1.3M tokens. Quietly watching the first 30
-            # seconds and reporting success would be a claim about time the
-            # model never saw — and the caller would have no way to tell.
+            # REFUSED, NOT TRUNCATED. Quietly watching the first 30 seconds of
+            # a ten-minute range and reporting success would be a claim about
+            # time the model never saw, and the caller would have no way to
+            # tell.
             return self._refused_watch(
                 ref,
-                f"a {span_s:g}s segment costs about "
-                f"{int(span_s * TOKENS_PER_CLIP_SECOND):,} prompt tokens at "
-                f"~{TOKENS_PER_CLIP_SECOND} tokens per second, and this handler's cap is "
-                f"{self._max_clip_s:g}s. Ask for a narrower range, or read the transcript "
-                f"to find the part worth watching.",
+                f"a {span_s:g}s segment is past this handler's {self._max_clip_s:g}s cap "
+                f"({_clip_cost(span_s)}, against a context window measured at 65,536 "
+                f"tokens on the reference server). Ask for a narrower range, or read the "
+                f"transcript to find the part worth watching.",
             )
         try:
             path = await self._source.local_path(ref.uri)
@@ -1246,6 +1271,24 @@ def _merge(
     entries.extend((cue.span.start_s, cue) for cue in cues)
     entries.sort(key=lambda entry: (entry[0], entry[1] is not None))
     return tuple(entries)
+
+
+def _clip_cost(span_s: float) -> str:
+    """What a clip of this length costs, phrased to the confidence available.
+
+    Below `LINEAR_CLIP_LIMIT_S` the measurements are a straight line and the
+    figure is a real estimate. Above it they are not: 60s, 300s and 1200s all
+    cost the same 88,033, and 120s costs 218,435 for reasons nobody here
+    understands. So past the linear range this says what was measured rather
+    than multiplying a rate — a refusal that quotes a fabricated number teaches
+    a caller something false about the system they are trying to use.
+    """
+    if span_s <= LINEAR_CLIP_LIMIT_S:
+        return f"about {int(span_s * TOKENS_PER_CLIP_SECOND):,} prompt tokens"
+    return (
+        f"at least {PLATEAU_CLIP_TOKENS:,} prompt tokens — past ~{LINEAR_CLIP_LIMIT_S:g}s "
+        f"cost stops tracking duration and does not fall below that"
+    )
 
 
 def _dropped_degradations(
