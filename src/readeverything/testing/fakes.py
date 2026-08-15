@@ -72,6 +72,39 @@ class FakeVision:
         return f"[{mime} image of {len(data)} bytes] {prompt}"
 
 
+class FakeClipModel:
+    """Describes a clip by its size, deterministically.
+
+    Deliberately has no `describe`: a fake that satisfied both `VisionModel`
+    and `ClipModel` would let a handler pass the tests that check it
+    distinguishes looking from watching.
+    """
+
+    model_id: str = "fake-clip@1"
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def watch(self, clip: bytes, mime: str, prompt: str) -> str:
+        self.calls += 1
+        return f"[{mime} clip of {len(clip)} bytes] {prompt}"
+
+
+class FakeClipModelRefusing:
+    """A clip model that answers with nothing.
+
+    More likely than for a still, not less: a clip is many frames of prompt,
+    so a reasoning model has more to think about before it starts writing —
+    measured, a two-frame call with a 300-token budget spent all 300 on
+    reasoning and returned empty content.
+    """
+
+    model_id: str = "fake-clip-refusing@1"
+
+    async def watch(self, clip: bytes, mime: str, prompt: str) -> str:
+        raise InfrastructureError("the model returned an empty completion")
+
+
 class FakeVisionRefusing:
     """A vision model that answers with nothing.
 
