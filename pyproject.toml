@@ -34,6 +34,16 @@ langchain = ["langchain-core>=0.3"]
 vision = ["langchain-openai>=0.2", "langchain-core>=0.3"]
 images = ["pillow>=11.0"]
 documents = ["pypdfium2>=5.13,<6"]
+# Kept separate from `documents` so a caller who only wants PDFs does not
+# acquire four more libraries. lxml is here for ODF, which has no maintained
+# reader: odfpy is unmaintained, and the text extraction is a few hundred lines
+# of walking one flat XML part.
+office = [
+    "python-docx>=1.1",
+    "python-pptx>=1.0",
+    "openpyxl>=3.1",
+    "lxml>=5.0",
+]
 transcription = ["faster-whisper>=1.2,<2"]
 # Transcription against a whisper.cpp server instead of local weights: an HTTP
 # client and nothing else, so it is a far lighter extra than `transcription`.
@@ -86,6 +96,25 @@ files = ["src", "tests"]
 # tests/unit/test_dependencies_stay_confined.py), so this is scoped there
 # rather than globally.
 module = "faster_whisper"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# Ships no stubs and no py.typed marker; confined to one handler (see
+# tests/unit/test_dependencies_stay_confined.py), so this is scoped there
+# rather than globally. The `.*` matters: the handler imports `docx.table`,
+# `docx.text.paragraph` and `docx.oxml.ns`, which a bare `docx` would miss.
+module = "docx.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# Ships no stubs and no py.typed marker; confined to one handler. `.*` for the
+# same reason as docx: `pptx.util` and `pptx.enum.shapes` are both imported.
+module = "pptx.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# Ships no stubs and no py.typed marker; confined to one handler.
+module = "openpyxl.*"
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

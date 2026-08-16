@@ -96,6 +96,14 @@ DEEPAGENTS_CONFINED_TEST_FILE = "integration/test_deepagents_composition.py"
 #: functions rather than reportlab itself.
 REPORTLAB_CONFINED_TEST_FILE = "fixtures_pdf.py"
 
+#: The three OOXML writers generate office fixtures at test time so no binary is
+#: committed (see tests/fixtures_office.py). Within `tests/` they are confined
+#: to the fixture module and to the fixture module's own guard test — which must
+#: read a generated document back with the same library that wrote it, or it
+#: would be guarding nothing. Every other test imports the fixture functions.
+OFFICE_WRITERS = frozenset({"docx", "pptx", "openpyxl"})
+OFFICE_WRITER_TEST_FILES = frozenset({"fixtures_office.py", "unit/test_office_fixtures.py"})
+
 
 def _imported_roots(tree: ast.AST) -> set[str]:
     roots: set[str] = set()
@@ -137,6 +145,16 @@ def test_reportlab_is_confined_to_the_fixture_module() -> None:
         ):
             violations.append(relative)
     assert not violations, f"reportlab imported outside its confined fixture module: {violations}"
+
+
+def test_the_office_writers_are_confined_to_the_fixture_module() -> None:
+    violations: list[str] = []
+    for path in TESTS.rglob("*.py"):
+        relative = str(path.relative_to(TESTS))
+        roots = _imported_roots(ast.parse(path.read_text()))
+        if roots & OFFICE_WRITERS and relative not in OFFICE_WRITER_TEST_FILES:
+            violations.append(relative)
+    assert not violations, f"office writers imported outside the fixture module: {violations}"
 
 
 def test_the_confinement_table_is_live() -> None:
