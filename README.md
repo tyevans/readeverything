@@ -118,6 +118,7 @@ service.
 | Media | `card.kind` | Affordances | Needs |
 |---|---|---|---|
 | Text, JSON, XML | `text` | `read_range` | nothing extra |
+| HTML (`.html`, `.xhtml`) | `text` | `read_section`, `read_range` | nothing extra |
 | Images | `image` | `crop_region` always; `describe_image` and `ocr` when a vision model is supplied | `images` extra (Pillow) for image handling; a vision model for description and OCR |
 | PDF | `binary` | `read_page`, `page_region`, `page_image`; `ocr_page` when a vision model is supplied | `documents` extra (pypdfium2); a vision model for `ocr_page` |
 | Word (`.docx`, `.odt`) | `binary` | `read_section`, `read_range`, `list_comments`, `read_table`; `page_image` when a converter is available | `office` extra (python-docx, lxml); a `soffice` binary for `page_image` |
