@@ -149,7 +149,7 @@ async def test_list_entries_rejects_the_wrong_params_type(
 ) -> None:
     """A params-type mismatch is a wiring bug, not bad input from an agent."""
     with pytest.raises(TypeError):
-        await handler.invoke(_ref(len(built)), "list_entries", Budget())  # type: ignore[arg-type]
+        await handler.invoke(_ref(len(built)), "list_entries", Budget(max_chars=None))  # type: ignore[arg-type]
 
 
 async def test_a_corrupt_archive_degrades_rather_than_raising(tmp_path: Path) -> None:
