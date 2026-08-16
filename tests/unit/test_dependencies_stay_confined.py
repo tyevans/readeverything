@@ -43,6 +43,11 @@ CONFINED: dict[str, set[str]] = {
     # cheap document facts, and the PDF handler extracts text — which is not a
     # probe's job, and no handler imports an adapter.
     "pypdfium2": {"adapters/pdfium_probe.py", "handlers/pdf.py"},
+    # The three OOXML readers, each confined to the one handler that speaks its
+    # document model. There is deliberately no shared "office" module importing
+    # all three: a caller who installed the extra for spreadsheets should not
+    # have a Word parser loaded, and one module would make that impossible.
+    "docx": {"handlers/office_word.py"},
     # ODF has no maintained reader — odfpy is unmaintained — so `adapters/odf.py`
     # walks the flat XML parts itself. lxml is that walk and nothing else in the
     # library touches it.
