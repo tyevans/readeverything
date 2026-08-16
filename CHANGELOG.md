@@ -7,10 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-A slide is a visual artifact, and asking what a chart shows no longer means
-reading the words around it. With LibreOffice installed, office documents hand
-back page images — and the legacy formats that used to hex-dump hand back
-words.
+## [0.4.0] - 2026-08-16
+
+Three kinds of file that used to come back as hex or as markup now come back as
+words. A slide is a visual artifact, and asking what a chart shows no longer
+means reading the text around it: with LibreOffice installed, office documents
+hand back page images, and the legacy formats that used to hex-dump hand back
+words. A saved web page reads as prose instead of tags. A book reads as
+chapters instead of a zip.
+
+None of that costs the citation. A quote from a page carries offsets into the
+original markup, and a quote from a book names the part it came from — because
+an answer that cannot be checked against its source is the thing this library
+exists not to produce.
 
 ### Added
 
@@ -303,7 +312,8 @@ on a `0.x` version, where a minor bump may still break you.
 - Video is read transcript-first: the words are cheaper and more informative
   than the frames, and frames are sampled only when asked for.
 
-[Unreleased]: https://github.com/tyevans/readeverything/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/tyevans/readeverything/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/tyevans/readeverything/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/tyevans/readeverything/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/tyevans/readeverything/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/tyevans/readeverything/releases/tag/v0.1.0
