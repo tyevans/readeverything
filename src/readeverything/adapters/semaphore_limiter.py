@@ -26,6 +26,12 @@ from readeverything.domain.capability import Capability
 DEFAULT_LIMITS: Mapping[Capability, int] = {
     Capability.VISION: 4,
     Capability.FFMPEG: 4,
+    # ONE, not four, and this one is not conservatism — it is correctness.
+    # `soffice` is not concurrency-safe across processes sharing a user
+    # profile, and two conversions racing corrupt the profile rather than
+    # merely slowing down. Conversions are cached, so the serialisation costs
+    # a document once and never again.
+    Capability.DOCUMENT_RENDER: 1,
 }
 
 
