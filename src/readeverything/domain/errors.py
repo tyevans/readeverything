@@ -60,5 +60,17 @@ class SourceUnreadableError(InfrastructureError):
     """A source could not be read."""
 
 
+class ContainerLimitExceededError(SourceUnreadableError):
+    """Descending into a container would have cost more than its limit allows.
+
+    A subclass of `SourceUnreadableError` rather than a sibling, so every
+    `except SourceUnreadableError` already written keeps working -- a caller
+    that handled an unreadable file handles an unreasonable one the same way.
+
+    Raised rather than returning truncated bytes. Truncation would hand a
+    handler half a PDF, which it would then report on as though it were whole.
+    """
+
+
 class ProbeFailedError(InfrastructureError):
     """An external probe or tool failed."""

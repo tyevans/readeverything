@@ -333,11 +333,16 @@ the exact conflation `resolution.py`'s docstring warns against.
 ```python
 async def build_perception(
     root, *,
-    containers: ContainerLimits | None = None,   # None disables descent entirely
-    archives: ArchiveOpener | None = None,        # defaults to zip + tar
+    containers: ContainerLimits | None = ContainerLimits(),  # None disables descent
+    archives: ArchiveOpener | None = None,                   # defaults to zip + tar
     ...
 ) -> Perception
 ```
+
+**Corrected during planning: the signature said `= None` while the prose below
+said descent is on by default.** The prose is the intended behavior and the
+default is now a `ContainerLimits()`; an explicit `None` opts out. Recorded
+rather than silently amended, per this repository's habit in Spec 4 §1.1.
 
 Passing `containers=None` yields today's behavior exactly, including no extra
 opens during `walk`. The default is a `ContainerLimits()` with §3.3's values —

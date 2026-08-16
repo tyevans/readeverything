@@ -125,6 +125,7 @@ service.
 | Spreadsheets (`.xlsx`, `.ods`) | `binary` | `read_sheet`, `read_cells`, `list_sheets` | `office` extra (openpyxl, lxml) |
 | Audio | `audio` | `read_span`, when a transcriber is supplied | `transcription` extra (faster-whisper) and an `ffmpeg` binary |
 | Video | `video` | `frame_at`; `describe_frame` when a vision model is supplied | an `ffmpeg` binary; a vision model for `describe_frame` |
+| Archives (zip, tar, tar.gz, tar.bz2, tar.xz) | `binary` | `list_entries`; members are addressed directly, see below | nothing extra |
 | Everything else | `binary` | `hexdump` | nothing extra |
 
 A PDF reports `card.kind == "binary"`, not a kind of its own. `MediaKind` names
@@ -141,12 +142,51 @@ is what an auditor needs. When a workbook was saved by a tool that stores no
 cached values, the formula text is shown in their place and a `Degradation`
 says so — a sheet full of arithmetic is never reported as empty.
 
-Archives have no handler yet — a `.zip` or a `.tar` falls through to the binary
-fallback above (a hex dump), not a dedicated representation.
-
 Legacy `.doc`, `.ppt` and `.xls` are out of scope. They are OLE2 compound
 files, a different container format entirely, and their pure-Python support is
 poor; they fall through to the hex dump.
+
+## Descending into containers
+
+A zip, a tarball and a `.tar.gz` are directories as far as the library is
+concerned. Members are addressed with `!`:
+
+```python
+perception = await build_perception("./corpus")
+await perception.list(".")
+# ['docs.zip', 'docs.zip!report.pdf', 'docs.zip!nested.tar.gz',
+#  'docs.zip!nested.tar.gz!notes.txt']
+
+card = await perception.inspect("docs.zip!report.pdf")
+card.facts["page_count"]        # 9 — a real PDF card, from inside the zip
+await perception.invoke("docs.zip!report.pdf", "read_page", {"page": 7})
+```
+
+Nothing in the PDF handler knows it is inside an archive: every handler reads
+bytes through a port and cannot tell where they came from. A member hashes to
+the same value as the same file loose on disk, so a cached OCR stays warm
+across the boundary.
+
+A literal `!` in a member name is escaped `!!`. Descent is bounded by
+`ContainerLimits` — depth, member size, total size, member count and, the one
+that matters, an expansion ratio checked *while* decompressing, so a zip bomb
+is refused rather than filling a disk:
+
+```python
+from readeverything import ContainerLimits
+
+await build_perception("./corpus", containers=ContainerLimits(max_depth=1))
+await build_perception("./corpus", containers=None)  # no descent at all
+```
+
+A `.docx`, `.epub` or `.jar` is a zip too, and is deliberately *not* treated as
+a folder: descending would bury the document under a dozen XML parts. `.7z` and
+`.rar` are not supported, because each needs a dependency this library does not
+take — supply your own `ArchiveOpener` via `archives=`.
+
+An office document is a zip, but it is a *document*: the part-name detection
+above claims it before the archive handler does, so `report.docx` gets a Word
+card rather than a folder of XML parts.
 
 ## Extras
 

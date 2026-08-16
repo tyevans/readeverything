@@ -38,12 +38,15 @@ if TYPE_CHECKING:
     from readeverything.adapters.hashing import StatMemo as StatMemo
     from readeverything.adapters.local_source import LocalFileSource as LocalFileSource
     from readeverything.adapters.model_probe import ModelProbe as ModelProbe
+    from readeverything.adapters.nested_source import CompositeOpener as CompositeOpener
+    from readeverything.adapters.nested_source import NestedSource as NestedSource
     from readeverything.adapters.pdfium_probe import PdfiumProbe as PdfiumProbe
     from readeverything.adapters.probing import discover as discover
     from readeverything.adapters.remote_whisper_transcriber import (
         RemoteWhisperTranscriber as RemoteWhisperTranscriber,
     )
     from readeverything.adapters.semaphore_limiter import SemaphoreLimiter as SemaphoreLimiter
+    from readeverything.adapters.tar_archive import TarArchiveOpener as TarArchiveOpener
     from readeverything.adapters.vision_langchain import (
         LangChainVisionModel as LangChainVisionModel,
     )
@@ -65,8 +68,14 @@ if TYPE_CHECKING:
     from readeverything.domain.capability import CapabilitySet as CapabilitySet
     from readeverything.domain.card import Card as Card
     from readeverything.domain.card import Segment as Segment
+    from readeverything.domain.container_uri import container_of as container_of
+    from readeverything.domain.container_uri import join_uri as join_uri
+    from readeverything.domain.container_uri import split_uri as split_uri
     from readeverything.domain.errors import (
         CapabilityUnavailableError as CapabilityUnavailableError,
+    )
+    from readeverything.domain.errors import (
+        ContainerLimitExceededError as ContainerLimitExceededError,
     )
     from readeverything.domain.errors import DomainError as DomainError
     from readeverything.domain.errors import InfrastructureError as InfrastructureError
@@ -99,6 +108,7 @@ if TYPE_CHECKING:
     from readeverything.domain.rendition import StructuredContent as StructuredContent
     from readeverything.domain.rendition import TextContent as TextContent
     from readeverything.domain.rendition import TranscriptCue as TranscriptCue
+    from readeverything.handlers.archive import ArchiveHandler as ArchiveHandler
     from readeverything.handlers.audio import AudioHandler as AudioHandler
     from readeverything.handlers.binary import BinaryHandler as BinaryHandler
     from readeverything.handlers.image import ImageHandler as ImageHandler
@@ -119,6 +129,9 @@ if TYPE_CHECKING:
     from readeverything.ports.captions import CaptionExtractor as CaptionExtractor
     from readeverything.ports.clip_source import ClipExtractor as ClipExtractor
     from readeverything.ports.clips import ClipModel as ClipModel
+    from readeverything.ports.containers import ArchiveEntry as ArchiveEntry
+    from readeverything.ports.containers import ArchiveOpener as ArchiveOpener
+    from readeverything.ports.containers import ContainerLimits as ContainerLimits
     from readeverything.ports.detection import MimeDetector as MimeDetector
     from readeverything.ports.handler import MediaHandler as MediaHandler
     from readeverything.ports.hashing import ContentHashing as ContentHashing
@@ -155,8 +168,20 @@ _LAZY: dict[str, str] = {
     "ArtifactStoreCompliance": "readeverything.testing.artifact_compliance",
     "AudioExtractor": "readeverything.ports.audio",
     "AudioHandler": "readeverything.handlers.audio",
+    "ArchiveEntry": "readeverything.ports.containers",
+    "ArchiveHandler": "readeverything.handlers.archive",
+    "ArchiveOpener": "readeverything.ports.containers",
     "BBox": "readeverything.domain.locators",
     "BinaryHandler": "readeverything.handlers.binary",
+    "CompositeOpener": "readeverything.adapters.nested_source",
+    "ContainerLimitExceededError": "readeverything.domain.errors",
+    "ContainerLimits": "readeverything.ports.containers",
+    "NestedSource": "readeverything.adapters.nested_source",
+    "TarArchiveOpener": "readeverything.adapters.tar_archive",
+    "ZipArchiveOpener": "readeverything.adapters.zip_archive",
+    "container_of": "readeverything.domain.container_uri",
+    "join_uri": "readeverything.domain.container_uri",
+    "split_uri": "readeverything.domain.container_uri",
     "BinaryProbe": "readeverything.adapters.binary_probe",
     "Budget": "readeverything.domain.rendition",
     "ByteRange": "readeverything.domain.locators",
