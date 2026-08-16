@@ -51,6 +51,7 @@ from readeverything.domain.observation import OperationFinished, OperationStarte
 from readeverything.domain.rendition import (
     Budget,
     Degradation,
+    ImageContent,
     Rendered,
     Rendition,
     TextContent,
@@ -133,6 +134,12 @@ class DescribeSlideImageParams(BaseModel):
     index: int = Field(default=0, ge=0, description="0-indexed picture number within the slide.")
 
 
+class DescribeSlideParams(BaseModel):
+    question: str = Field(description="What you want to know about the slide.")
+    page: int = Field(default=1, ge=1, description="1-indexed slide number.")
+    dpi: int = Field(default=150, gt=0, description="Render resolution, in dots per inch.")
+
+
 class OfficeSlidesHandler:
     """Reads a deck, and maps every character to the slide it came from."""
 
@@ -202,6 +209,31 @@ class OfficeSlidesHandler:
             # to read, and a vision model with no converter still describes an
             # embedded picture. Two capabilities, two affordances.
             affordances.append(page_image_affordance(_RENDER_UNIT))
+        if self._renderer is not None and self._vision is not None:
+            # Two capabilities at once, which is what earns this its own
+            # affordance rather than leaving a caller to chain `page_image`
+            # into `ask_about_image`. That chain costs two round trips and a
+            # schema read to express one intent -- the argument that produced
+            # `ask_about_image` itself, one medium along.
+            #
+            # `describe_slide_image` above is a DIFFERENT question and both
+            # exist deliberately: that one asks about a picture the author
+            # embedded, this one asks about the slide as the audience saw it.
+            affordances.append(
+                Affordance(
+                    name="describe_slide",
+                    description=(
+                        "Render a whole slide and ask a vision model about it. Use "
+                        "this when the answer is in the slide's arrangement, a chart "
+                        "or a diagram rather than in its text -- read_slide is far "
+                        "cheaper when the text is really there. The model sees a "
+                        "faithful rendering of the slide, not the original file."
+                    ),
+                    params=DescribeSlideParams,
+                    requires=frozenset({Capability.DOCUMENT_RENDER, Capability.VISION}),
+                    level=DetailLevel.DEEP,
+                )
+            )
         return tuple(affordances)
 
     # -- parsing ---------------------------------------------------------
@@ -394,6 +426,10 @@ class OfficeSlidesHandler:
                 if not isinstance(params, PageImageParams):
                     raise TypeError(f"expected PageImageParams, got {type(params).__name__}")
                 return await self._page_image(ref, params)
+            case "describe_slide":
+                if not isinstance(params, DescribeSlideParams):
+                    raise TypeError(f"expected DescribeSlideParams, got {type(params).__name__}")
+                return await self._describe_slide(ref, params)
             case _:
                 raise UnknownAffordanceError(name, (a.name for a in self.affordances()))
 
@@ -490,6 +526,43 @@ class OfficeSlidesHandler:
         return Rendition(
             locator=PageRef(params.page),
             content=TextContent(" ".join(answer.split())),
+        )
+
+    async def _describe_slide(self, ref: SourceRef, params: DescribeSlideParams) -> Rendition:
+        if self._vision is None or self._renderer is None:
+            raise UnknownAffordanceError("describe_slide", (a.name for a in self.affordances()))
+        # Rendering first, and its degradation is returned UNCHANGED when it
+        # fails: the reason a slide could not be rendered is a better answer
+        # than "the model could not describe it", and it is the true one.
+        rendered = await render_page_image(
+            renderer=self._renderer,
+            source=self._source,
+            ref=ref,
+            params=PageImageParams(page=params.page, dpi=params.dpi),
+            unit=_RENDER_UNIT,
+        )
+        if not isinstance(rendered.content, ImageContent):
+            return rendered
+        try:
+            answer = await self._vision.describe(
+                rendered.content.data, rendered.content.mime, params.question
+            )
+        except Exception:
+            return self._degraded(
+                ref, f"the vision model failed to answer about slide {params.page}"
+            )
+        if not answer.strip():
+            return self._degraded(
+                ref, f"the vision model returned no answer about slide {params.page}"
+            )
+        return Rendition(
+            locator=PageRef(params.page),
+            content=TextContent(" ".join(answer.split())),
+            # The model looked at a RENDERING, so an answer about typography is
+            # an answer about the converter's font substitutions. Carrying the
+            # provenance through is what stops that being read as a fact about
+            # the deck.
+            degradations=rendered.degradations,
         )
 
     async def represent(self, ref: SourceRef, budget: Budget) -> Rendered:

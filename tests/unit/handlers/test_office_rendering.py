@@ -17,9 +17,10 @@ import pytest
 from readeverything.adapters.local_source import LocalFileSource
 from readeverything.adapters.ooxml import SHEETS_MIME, SLIDES_MIME, WORD_MIME
 from readeverything.domain.capability import Capability, CapabilitySet
+from readeverything.domain.errors import RenditionFailedError
 from readeverything.domain.identity import ContentHash, MimeType, SourceRef
 from readeverything.domain.locators import PageRef
-from readeverything.domain.rendition import ImageContent
+from readeverything.domain.rendition import ImageContent, TextContent
 from readeverything.handlers.office_sheets import OfficeSheetsHandler
 from readeverything.handlers.office_slides import OfficeSlidesHandler
 from readeverything.handlers.office_word import OfficeWordHandler
@@ -27,7 +28,7 @@ from readeverything.handlers.page_images import PageImageParams
 from readeverything.ports.handler import MediaHandler
 from readeverything.ports.rendering import DocumentRenderer
 from readeverything.registry.registry import MimeTypeRegistry
-from readeverything.testing.fakes import FakeSource, FakeVision
+from readeverything.testing.fakes import FakeSource, FakeVision, FakeVisionRefusing
 from tests.fixtures_office import docx_bytes, pptx_bytes, xlsx_bytes
 
 
@@ -171,3 +172,153 @@ async def test_each_handler_renders_a_page_through_the_injected_converter(
     assert rendition.content.data == b"\x89PNG fake 2"
     assert rendition.locator == PageRef(2)
     assert rendition.degradations, "a rendering must say that it is one"
+
+
+# --- describe_slide -------------------------------------------------------
+#
+# The one-call version of "render slide 4 and ask about it". Two capabilities
+# at once, which is what makes it worth its own affordance rather than leaving
+# a caller to chain page_image into ask_about_image -- the same argument that
+# produced `ask_about_image` in 0.2.0, one medium along.
+
+
+def test_describe_slide_needs_both_capabilities() -> None:
+    source = FakeSource({})
+    render_only = OfficeSlidesHandler(source=source, renderer=_Renderer())
+    vision_only = OfficeSlidesHandler(source=source, vision=FakeVision())
+    both = OfficeSlidesHandler(source=source, vision=FakeVision(), renderer=_Renderer())
+
+    assert "describe_slide" not in _names(render_only)
+    assert "describe_slide" not in _names(vision_only)
+    assert "describe_slide" in _names(both)
+
+
+def test_describe_slide_declares_both_requirements() -> None:
+    """Either one missing must un-publish it. Declaring only one would let a
+    machine with a converter and no model offer a tool that cannot answer."""
+    handler = OfficeSlidesHandler(source=FakeSource({}), vision=FakeVision(), renderer=_Renderer())
+    affordance = next(a for a in handler.affordances() if a.name == "describe_slide")
+    assert affordance.requires == frozenset({Capability.DOCUMENT_RENDER, Capability.VISION})
+
+
+@pytest.mark.parametrize(
+    "capabilities",
+    [
+        CapabilitySet.empty(),
+        CapabilitySet.of({Capability.VISION: "m"}),
+        CapabilitySet.of({Capability.DOCUMENT_RENDER: "soffice"}),
+    ],
+    ids=["neither", "vision only", "rendering only"],
+)
+def test_describe_slide_is_not_published_without_both(capabilities: CapabilitySet) -> None:
+    handler = OfficeSlidesHandler(source=FakeSource({}), vision=FakeVision(), renderer=_Renderer())
+    assert "describe_slide" not in _visible(handler, capabilities)
+
+
+def test_describe_slide_is_published_with_both() -> None:
+    handler = OfficeSlidesHandler(source=FakeSource({}), vision=FakeVision(), renderer=_Renderer())
+    capabilities = CapabilitySet.of({Capability.VISION: "m", Capability.DOCUMENT_RENDER: "soffice"})
+    assert "describe_slide" in _visible(handler, capabilities)
+
+
+async def test_describe_slide_renders_the_slide_and_asks_about_it(tmp_path: Path) -> None:
+    """The acceptance sentence's last clause: the answer cites the slide."""
+    from readeverything.handlers.office_slides import DescribeSlideParams
+
+    (tmp_path / "deck.pptx").write_bytes(pptx_bytes())
+    handler = OfficeSlidesHandler(
+        source=LocalFileSource(root=tmp_path),
+        vision=FakeVision(),
+        renderer=_Renderer(),
+    )
+    ref = SourceRef(
+        uri="deck.pptx",
+        mime=MimeType.parse(SLIDES_MIME),
+        content_hash=ContentHash("0" * 64),
+        size_bytes=1,
+    )
+
+    rendition = await handler.invoke(
+        ref, "describe_slide", DescribeSlideParams(page=3, question="what is on it?")
+    )
+
+    assert isinstance(rendition.content, TextContent)
+    assert rendition.content.text.strip()
+    assert rendition.locator == PageRef(3)
+    assert not rendition.degraded
+
+
+async def test_describe_slide_says_the_model_looked_at_a_rendering(tmp_path: Path) -> None:
+    """The model did not see the deck; it saw a converted picture of one slide.
+    An answer about typography is an answer about the converter's fonts."""
+    from readeverything.handlers.office_slides import DescribeSlideParams
+
+    (tmp_path / "deck.pptx").write_bytes(pptx_bytes())
+    handler = OfficeSlidesHandler(
+        source=LocalFileSource(root=tmp_path),
+        vision=FakeVision(),
+        renderer=_Renderer(),
+    )
+    ref = SourceRef(
+        uri="deck.pptx",
+        mime=MimeType.parse(SLIDES_MIME),
+        content_hash=ContentHash("0" * 64),
+        size_bytes=1,
+    )
+
+    rendition = await handler.invoke(
+        ref, "describe_slide", DescribeSlideParams(page=1, question="what is on it?")
+    )
+    assert any("font" in d.detail for d in rendition.degradations)
+
+
+async def test_describe_slide_degrades_when_the_slide_cannot_be_rendered(
+    tmp_path: Path,
+) -> None:
+    from readeverything.handlers.office_slides import DescribeSlideParams
+
+    class _Failing(_Renderer):
+        async def render_page(self, path: str, page: int, *, dpi: int = 150) -> bytes:
+            raise RenditionFailedError("no")
+
+    (tmp_path / "deck.pptx").write_bytes(pptx_bytes())
+    handler = OfficeSlidesHandler(
+        source=LocalFileSource(root=tmp_path),
+        vision=FakeVision(),
+        renderer=_Failing(),
+    )
+    ref = SourceRef(
+        uri="deck.pptx",
+        mime=MimeType.parse(SLIDES_MIME),
+        content_hash=ContentHash("0" * 64),
+        size_bytes=1,
+    )
+
+    rendition = await handler.invoke(
+        ref, "describe_slide", DescribeSlideParams(page=9, question="what is on it?")
+    )
+    assert rendition.degraded
+
+
+async def test_describe_slide_degrades_when_the_model_refuses(tmp_path: Path) -> None:
+    """A vision failure must not raise out of a handler, and must not be
+    reported as a fact about the slide."""
+    from readeverything.handlers.office_slides import DescribeSlideParams
+
+    (tmp_path / "deck.pptx").write_bytes(pptx_bytes())
+    handler = OfficeSlidesHandler(
+        source=LocalFileSource(root=tmp_path),
+        vision=FakeVisionRefusing(),
+        renderer=_Renderer(),
+    )
+    ref = SourceRef(
+        uri="deck.pptx",
+        mime=MimeType.parse(SLIDES_MIME),
+        content_hash=ContentHash("0" * 64),
+        size_bytes=1,
+    )
+
+    rendition = await handler.invoke(
+        ref, "describe_slide", DescribeSlideParams(page=1, question="what is on it?")
+    )
+    assert rendition.degraded

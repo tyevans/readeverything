@@ -20,6 +20,13 @@ words.
   the structural reader genuinely does not have — a `.docx` has no pages until
   something lays it out — and a spreadsheet's page is its print layout rather
   than its cell grid.
+- **`describe_slide` on the slide handler**, when a vision model and a
+  converter are both available. It renders the slide and asks the model about
+  it in one call, and the answer is located at the slide — where chaining
+  `page_image` into `ask_about_image` costs two round trips and a schema read
+  to express one intent. It is a different question from
+  `describe_slide_image`, which asks about a picture the author *embedded*;
+  this one asks about the slide as an audience saw it.
 - **Legacy `.doc`, `.ppt` and `.xls` are readable**, where 0.3.0 declared them
   out of scope. They get a card, page text and page images. They arrive as a
   capability rather than as a dependency: with no converter they fall through

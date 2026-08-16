@@ -121,7 +121,7 @@ service.
 | Images | `image` | `crop_region` always; `describe_image` and `ocr` when a vision model is supplied | `images` extra (Pillow) for image handling; a vision model for description and OCR |
 | PDF | `binary` | `read_page`, `page_region`, `page_image`; `ocr_page` when a vision model is supplied | `documents` extra (pypdfium2); a vision model for `ocr_page` |
 | Word (`.docx`, `.odt`) | `binary` | `read_section`, `read_range`, `list_comments`, `read_table`; `page_image` when a converter is available | `office` extra (python-docx, lxml); a `soffice` binary for `page_image` |
-| Slides (`.pptx`, `.odp`) | `binary` | `read_slide`, `list_media`; `describe_slide_image` when a vision model is supplied; `page_image` when a converter is available | `office` extra (python-pptx, lxml); a vision model for `describe_slide_image`; a `soffice` binary for `page_image` |
+| Slides (`.pptx`, `.odp`) | `binary` | `read_slide`, `list_media`; `describe_slide_image` when a vision model is supplied; `page_image` when a converter is available; `describe_slide` when both are | `office` extra (python-pptx, lxml); a vision model, a `soffice` binary, or both |
 | Spreadsheets (`.xlsx`, `.ods`) | `binary` | `read_sheet`, `read_cells`, `list_sheets`; `page_image` of the print layout when a converter is available | `office` extra (openpyxl, lxml); a `soffice` binary for `page_image` |
 | Legacy office (`.doc`, `.ppt`, `.xls`) | `binary` | `read_page`, `page_image` — only when a converter is available, otherwise the hex dump | a `soffice` binary and the `documents` extra (pypdfium2) |
 | Audio | `audio` | `read_span`, when a transcriber is supplied | `transcription` extra (faster-whisper) and an `ffmpeg` binary |
@@ -175,6 +175,20 @@ that already reads PDFs and photographs:
 perception = await build_perception("./corpus")   # nothing else to configure
 png = await perception.invoke("deck.pptx", "page_image", {"page": 4, "dpi": 150})
 ```
+
+With a vision model configured as well, a deck gains `describe_slide`, which
+does both halves in one call:
+
+```python
+answer = await perception.invoke(
+    "deck.pptx", "describe_slide", {"page": 4, "question": "Which quarter's bar is taller?"}
+)
+answer.locator     # PageRef(page=4) — the answer cites the slide
+```
+
+That is a different question from `describe_slide_image`, and both exist:
+`describe_slide_image` asks about a picture the author embedded, and
+`describe_slide` asks about the slide as the audience saw it.
 
 The document is converted to PDF **once**, cached in the artifact store under
 its content hash, and every page after the first is rendered from that — so a
