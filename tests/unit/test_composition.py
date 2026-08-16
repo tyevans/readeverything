@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import io
 import sys
+import zipfile
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -17,13 +18,14 @@ from readeverything.composition import build_perception
 from readeverything.domain.capability import Capability, CapabilitySet
 from readeverything.domain.errors import DomainError
 from readeverything.domain.identity import ContentHash, MimeType, SourceRef
-from readeverything.domain.locators import CharSpan
+from readeverything.domain.locators import CharSpan, PartSpan
 from readeverything.domain.rendition import Budget
 from readeverything.handlers.audio import AudioHandler
 from readeverything.handlers.video import VideoHandler
 from readeverything.ports.limits import Limiter
 from readeverything.ports.streams import MediaFacts, StreamInfo
 from readeverything.testing.fakes import CountingLimiter, FakeVision, RecordingObserver
+from tests.fixtures_epub import build_epub
 
 
 def _png_bytes() -> bytes:
@@ -532,3 +534,29 @@ async def test_an_html_files_citation_points_into_the_original_markup(tmp_path: 
     locator = rendered.locator_map.resolve(offset)
     assert isinstance(locator, CharSpan)
     assert source[locator.start : locator.end].strip() == "A sentence worth quoting."
+
+
+async def test_an_epub_is_read_as_a_book_rather_than_hex_dumped(tmp_path: Path) -> None:
+    """The sentence this handler exists for, through the real root.
+
+    An epub is deliberately not descended into as a folder, and before this
+    handler nothing claimed the mimetype -- so a book came back as hex.
+    """
+    (tmp_path / "book.epub").write_bytes(build_epub())
+    perception = await build_perception(tmp_path)
+    card = await perception.inspect("book.epub")
+    assert card.facts["title"] == "A Short Book"
+    rendered = await perception.represent("book.epub", Budget(max_chars=None))
+    assert "It began quietly." in rendered.text
+
+
+async def test_a_quote_from_a_book_names_the_part_it_came_from(tmp_path: Path) -> None:
+    """The citation, in a container: extract that part and the sentence is there."""
+    (tmp_path / "book.epub").write_bytes(build_epub())
+    perception = await build_perception(tmp_path)
+    rendered = await perception.represent("book.epub", Budget(max_chars=None))
+    locator = rendered.locator_map.resolve(rendered.text.index("It ended."))
+    assert isinstance(locator, PartSpan)
+    with zipfile.ZipFile(tmp_path / "book.epub") as book:
+        part = book.read(locator.part).decode()
+    assert "It ended." in part[locator.start : locator.end]

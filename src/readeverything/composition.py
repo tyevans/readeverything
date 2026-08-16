@@ -29,6 +29,7 @@ from readeverything.domain.capability import Capability, CapabilitySet
 from readeverything.domain.errors import DomainError
 from readeverything.handlers.archive import ArchiveHandler
 from readeverything.handlers.binary import BinaryHandler
+from readeverything.handlers.epub import EpubHandler
 from readeverything.handlers.html import HtmlHandler
 from readeverything.handlers.text import TextHandler
 from readeverything.pipeline.perception import Perception
@@ -443,6 +444,10 @@ async def build_perception(
         # and `kind:text` at `MatchRank.KIND` -- so the order here is
         # cosmetic, and it is placed next to `TextHandler` to read that way.
         HtmlHandler(source=source, observer=observer),
+        # Unconditional for the same reason: an epub is a zip of xhtml, and
+        # stdlib reads both. Without this a book fell through to the hex dump,
+        # since `NOT_A_FOLDER_MIMES` rightly refuses to treat it as a folder.
+        EpubHandler(source=source, observer=observer),
         *_optional_image_handler(source, vision, observer),
         *_optional_pdf_handler(source, vision, observer),
         *_optional_office_handlers(source, vision, wired_renderer, observer),

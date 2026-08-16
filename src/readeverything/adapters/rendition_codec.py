@@ -36,6 +36,7 @@ from readeverything.domain.locators import (
     CharSpan,
     Locator,
     PageRef,
+    PartSpan,
     TimeSpan,
 )
 from readeverything.domain.rendition import (
@@ -68,6 +69,8 @@ def _encode_locator(locator: Locator) -> dict[str, Any]:
                 "rows": rows,
                 "cols": cols,
             }
+        case PartSpan(part=part, start=start, end=end):
+            return {"__type__": "PartSpan", "part": part, "start": start, "end": end}
     raise DomainError(f"unencodable locator type: {type(locator).__name__}")
 
 
@@ -92,6 +95,8 @@ def _decode_locator(raw: dict[str, Any]) -> Locator:
                 rows=raw["rows"],
                 cols=raw["cols"],
             )
+        case "PartSpan":
+            return PartSpan(part=raw["part"], start=raw["start"], end=raw["end"])
         case _:
             raise DomainError(f"unknown locator __type__ tag: {tag!r}")
 

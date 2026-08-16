@@ -17,6 +17,7 @@ from readeverything.domain.locators import (
     CharSpan,
     Locator,
     PageRef,
+    PartSpan,
     TimeSpan,
 )
 from readeverything.domain.rendition import (
@@ -35,6 +36,7 @@ LOCATORS = [
     BBox(page=None, x=0.0, y=0.0, w=1.0, h=1.0),
     CellRange(sheet="Data", row=0, col=0),
     CellRange(sheet="Data", row=2, col=1, rows=3, cols=4),
+    PartSpan(part="OEBPS/ch3.xhtml", start=0, end=40),
 ]
 
 CONTENTS = [

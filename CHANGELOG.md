@@ -14,6 +14,31 @@ words.
 
 ### Added
 
+- **An EPUB handler.** A book used to hex-dump. `.epub` is in
+  `NOT_A_FOLDER_MIMES` — descending into one would bury the novel under a
+  manifest, a stylesheet and a dozen numbered parts — and until now nothing
+  claimed the mimetype, so the refusal to treat it as a folder left it with
+  nowhere to go. `EpubHandler` reads the spine, in the spine's order, which is
+  the only thing in the file that says what order the book is read in.
+  `read_chapter` and `read_range`; chapters are named from the table of
+  contents, EPUB 2's NCX and EPUB 3's nav document alike.
+
+  Prose comes from the same `html_text` reader the HTML handler uses, so a
+  chapter and a saved web page are read by identical code. A DRM-protected
+  book says it is encrypted rather than returning a book of noise, and one
+  unreadable part costs a reader that chapter rather than the other nine.
+
+  Stdlib only: `zipfile` and `xml.etree`, no new dependency.
+
+- **`PartSpan`, a locator for a document made of files.** An EPUB's text lives
+  in a dozen XHTML files inside a zip, and none of the six existing locators
+  could say where a sentence came from: `CharSpan` names offsets with no file,
+  which in a book of twelve chapters is twelve possible answers, and a
+  `ByteRange` into the epub addresses compressed bytes — checkable only by a
+  reader who reimplements DEFLATE, which is the opposite of what a citation is
+  for. `PartSpan` names the member and the offsets within it: extract
+  `OEBPS/ch3.xhtml`, slice, and the quoted sentence is there.
+
 - **An HTML handler.** A saved article, a scraped page or an emailed report
   used to match `kind:text` and come back as raw markup — tags, inline scripts
   and stylesheets, which on a real page is most of the bytes and none of the
