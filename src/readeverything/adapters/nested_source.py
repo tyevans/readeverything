@@ -36,7 +36,13 @@ from pathlib import Path, PurePosixPath
 from readeverything.domain.container_uri import join_uri, split_uri
 from readeverything.domain.errors import ContainerLimitExceededError, SourceUnreadableError
 from readeverything.domain.identity import MimeType
-from readeverything.ports.containers import ArchiveEntry, ArchiveOpener, ContainerLimits
+from readeverything.ports.containers import (
+    NOT_A_FOLDER_MIMES,
+    NOT_A_FOLDER_SUFFIXES,
+    ArchiveEntry,
+    ArchiveOpener,
+    ContainerLimits,
+)
 from readeverything.ports.detection import MimeDetector
 from readeverything.ports.source import FileSource
 
@@ -135,12 +141,21 @@ class NestedSource:
         #: inodes, and a fresh temp file per call would make every member look
         #: like a different file on every access.
         self._materialised: dict[str, str] = {}
-        self._lock = asyncio.Lock()
+        #: One lock PER URI, not one lock for the source.
+        #:
+        #: Materialising `a.zip!b.tar!c.txt` has to materialise `a.zip!b.tar`
+        #: first, so a single shared lock deadlocks against itself the moment
+        #: anything is two containers deep. A per-uri lock cannot: a
+        #: container's uri is a strict prefix of its member's, so the two are
+        #: never the same key, and each still serialises concurrent readers of
+        #: the same member so it is written once.
+        self._locks: dict[str, asyncio.Lock] = {}
 
     async def aclose(self) -> None:
         """Remove every temp file this source and its openers created."""
         await asyncio.to_thread(self._temp.cleanup)
         self._materialised.clear()
+        self._locks.clear()
         closer = getattr(self._archives, "aclose", None)
         if closer is not None:
             await closer()
@@ -267,7 +282,8 @@ class NestedSource:
         return bytes(buffer)
 
     async def _materialise(self, uri: str) -> str:
-        async with self._lock:
+        lock = self._locks.setdefault(uri, asyncio.Lock())
+        async with lock:
             existing = self._materialised.get(uri)
             if existing is not None:
                 return existing
@@ -338,5 +354,93 @@ class NestedSource:
             return await self._inner.local_path(uri)
         return await self._materialise(uri)
 
+    async def _is_a_folder(self, uri: str, path: str) -> ArchiveOpener | None:
+        """The opener to descend with, or None because this is not a folder.
+
+        A container is not always a folder. A `.docx`, `.pptx`, `.xlsx`,
+        `.odt`, `.epub` and `.jar` are all zip files, and descending into one
+        would list `report.docx!word/document.xml` as a source -- which is
+        worse than useless, because it buries the document itself under a
+        dozen XML parts.
+
+        The general rule is that `walk` descends only when no handler claims
+        the container's specific mimetype above the archive handler. Spec 9
+        makes detection report OOXML and ODF as their own types, at which
+        point those handlers claim the file and it stops being a folder for
+        the general reason. The explicit sets consulted here are what keep the
+        behavior CORRECT in the interim rather than briefly wrong, and the
+        suffix set is needed alongside the mimetype set because detection is
+        content-first: the bytes of a `.docx` genuinely are a zip.
+        """
+        if PurePosixPath(uri).suffix.lower() in NOT_A_FOLDER_SUFFIXES:
+            return None
+        try:
+            head = await asyncio.to_thread(_read_head, path)
+        except OSError:
+            return None
+        mime = await self._detector.detect(uri, head)
+        if str(mime) in NOT_A_FOLDER_MIMES:
+            return None
+        return self._dispatch(mime)
+
+    async def _members_of(self, uri: str, path: str, depth: int) -> list[str]:
+        """Every source inside the container at `uri`, recursively.
+
+        Every failure here is swallowed and returns what was found so far.
+        One corrupt or oversized archive in a directory must not blind the
+        agent to its neighbours -- that is the §1.1 acceptance, and it is the
+        difference between a degraded listing and no listing at all.
+        """
+        if depth >= self._limits.max_depth:
+            return []
+        opener = await self._is_a_folder(uri, path)
+        if opener is None:
+            return []
+        try:
+            entries = await self._entries(opener, path, uri)
+        except SourceUnreadableError:
+            return []
+        found: list[str] = []
+        for entry in entries:
+            if entry.is_dir or entry.is_symlink:
+                # A directory is not a source (matching `LocalFileSource.walk`)
+                # and a symlink is reported by the archive card, never walked
+                # into -- following one is the tar-specific hole.
+                continue
+            try:
+                member_uri = join_uri((*split_uri(uri), entry.path))
+            except ValueError:
+                continue
+            found.append(member_uri)
+            try:
+                inner_path = await self._materialise(member_uri)
+            except (SourceUnreadableError, OSError):
+                continue
+            found.extend(await self._members_of(member_uri, inner_path, depth + 1))
+        return found
+
     async def walk(self, uri: str) -> Sequence[str]:
-        return await self._inner.walk(uri)
+        """Everything under `uri`, with container members listed inline.
+
+        This is the decision that makes every downstream feature free. Because
+        `pipeline.perception` walks and then inspects, and inspection
+        dispatches on detected mimetype, an archived PDF reaches the PDF
+        handler with no registry change, no handler change and no special case
+        anywhere above this layer.
+
+        The cost, stated rather than hidden: this now reads every archive's
+        central directory -- a seek and a small read per archive, not a
+        decompression, but on a directory of ten thousand zips it is ten
+        thousand extra opens. `ContainerLimits.walk_members` turns it off.
+        """
+        found = list(await self._inner.walk(uri))
+        if not self._limits.walk_members:
+            return found
+        results = list(found)
+        for entry_uri in found:
+            try:
+                path = await self._inner.local_path(entry_uri)
+            except SourceUnreadableError:
+                continue
+            results.extend(await self._members_of(entry_uri, path, 0))
+        return results

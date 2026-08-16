@@ -238,3 +238,107 @@ async def test_the_composite_refuses_to_be_used_as_a_single_opener() -> None:
         await composite.entries("anything")
     with pytest.raises(NotImplementedError):
         composite.open_member("anything", "member")
+
+
+async def test_walk_returns_members_inline(tmp_path: Path) -> None:
+    (tmp_path / "loose.txt").write_bytes(b"x")
+    _zip(tmp_path, "docs.zip", {"report.txt": b"y"})
+    assert sorted(await _nested(tmp_path).walk(".")) == [
+        "docs.zip",
+        "docs.zip!report.txt",
+        "loose.txt",
+    ]
+
+
+async def test_walk_recurses_into_nested_containers(tmp_path: Path) -> None:
+    """The §1.1 acceptance addressing, produced by `walk` alone."""
+    build = tmp_path / "build"
+    build.mkdir()
+    _targz(build, "nested.tar.gz", {"notes.txt": b"deep"})
+    _zip(tmp_path, "docs.zip", {"nested.tar.gz": (build / "nested.tar.gz").read_bytes()})
+    (build / "nested.tar.gz").unlink()
+    build.rmdir()
+    source = _nested(tmp_path)
+    try:
+        assert sorted(await source.walk(".")) == [
+            "docs.zip",
+            "docs.zip!nested.tar.gz",
+            "docs.zip!nested.tar.gz!notes.txt",
+        ]
+    finally:
+        await source.aclose()
+
+
+async def test_walk_does_not_return_directory_entries(tmp_path: Path) -> None:
+    path = tmp_path / "d.zip"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("sub/", b"")
+        archive.writestr("sub/a.txt", b"hi")
+    assert sorted(await _nested(tmp_path).walk(".")) == ["d.zip", "d.zip!sub/a.txt"]
+
+
+async def test_walk_escapes_a_literal_separator_in_a_member_name(tmp_path: Path) -> None:
+    _zip(tmp_path, "a.zip", {"od!d.txt": b"x"})
+    assert "a.zip!od!!d.txt" in await _nested(tmp_path).walk(".")
+
+
+async def test_walk_stops_at_max_depth(tmp_path: Path) -> None:
+    build = tmp_path / "build"
+    build.mkdir()
+    _targz(build, "nested.tar.gz", {"notes.txt": b"deep"})
+    _zip(tmp_path, "docs.zip", {"nested.tar.gz": (build / "nested.tar.gz").read_bytes()})
+    (build / "nested.tar.gz").unlink()
+    build.rmdir()
+    source = _nested(tmp_path, ContainerLimits(max_depth=1))
+    try:
+        assert sorted(await source.walk(".")) == ["docs.zip", "docs.zip!nested.tar.gz"]
+    finally:
+        await source.aclose()
+
+
+async def test_walk_members_false_restores_the_old_behavior(tmp_path: Path) -> None:
+    """Exactly today's output, and exactly today's number of opens."""
+    _zip(tmp_path, "docs.zip", {"report.txt": b"y"})
+    source = _nested(tmp_path, ContainerLimits(walk_members=False))
+    assert sorted(await source.walk(".")) == ["docs.zip"]
+
+
+async def test_walk_does_not_descend_into_a_docx(tmp_path: Path) -> None:
+    """A .docx is a zip and is not a folder. Descending would list a dozen XML
+    parts and bury the document itself."""
+    with zipfile.ZipFile(tmp_path / "report.docx", "w") as archive:
+        archive.writestr("[Content_Types].xml", b"<Types/>")
+        archive.writestr("word/document.xml", b"<w:document/>")
+    assert sorted(await _nested(tmp_path).walk(".")) == ["report.docx"]
+
+
+async def test_walk_does_not_descend_into_an_epub_or_a_jar(tmp_path: Path) -> None:
+    for name in ("book.epub", "lib.jar"):
+        with zipfile.ZipFile(tmp_path / name, "w") as archive:
+            archive.writestr("inner.txt", b"x")
+    assert sorted(await _nested(tmp_path).walk(".")) == ["book.epub", "lib.jar"]
+
+
+async def test_walk_survives_a_corrupt_archive(tmp_path: Path) -> None:
+    """One unreadable archive must not blind the agent to its neighbours."""
+    (tmp_path / "broken.zip").write_bytes(b"PK\x03\x04 and then garbage")
+    (tmp_path / "fine.txt").write_bytes(b"x")
+    assert sorted(await _nested(tmp_path).walk(".")) == ["broken.zip", "fine.txt"]
+
+
+async def test_walk_survives_an_archive_over_its_limits(tmp_path: Path) -> None:
+    _zip(tmp_path, "many.zip", {f"f{n}.txt": b"x" for n in range(20)})
+    (tmp_path / "fine.txt").write_bytes(b"x")
+    source = _nested(tmp_path, ContainerLimits(max_members=5))
+    assert sorted(await source.walk(".")) == ["fine.txt", "many.zip"]
+
+
+async def test_walk_does_not_descend_into_a_symlink_member(tmp_path: Path) -> None:
+    """Reported by the archive card, never walked into."""
+    path = tmp_path / "l.tar"
+    with tarfile.open(path, "w") as archive:
+        info = tarfile.TarInfo("passwd")
+        info.type = tarfile.SYMTYPE
+        info.linkname = "/etc/passwd"
+        archive.addfile(info)
+    assert sorted(await _nested(tmp_path).walk(".")) == ["l.tar"]
