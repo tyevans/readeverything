@@ -76,9 +76,32 @@ Detection must not be extension-driven, and `puremagic` reports most OOXML as
 `application/zip` because that is what the bytes are.
 
 `adapters/detection.py` gains a refinement step: when the detected mimetype is
-`application/zip`, peek at the container's `[Content_Types].xml` (OOXML) or
-`mimetype` entry (ODF, which is stored uncompressed as the first entry
-precisely so it can be sniffed) and report the specific type:
+`application/zip`, classify by walking the zip's **local file headers within the
+detector's head window** and reading the part-name prefixes — `word/` for a
+document, `ppt/` for a presentation, `xl/` for a workbook. ODF is detected from
+its `mimetype` entry, which the format requires to be stored first and
+uncompressed precisely so it can be sniffed.
+
+**Corrected during planning: this section originally specified reading
+`[Content_Types].xml`, and that rule cannot work.** The agent implementing it
+measured that openpyxl writes `[Content_Types].xml` as the *last* zip entry,
+while the detector only ever sees `read_range(uri, 0, 4096)` — so the rule is
+unreachable for every `.xlsx`, and would have detected Word and PowerPoint
+while silently failing Excel. The override it carries is also
+`…spreadsheetml.sheet.main+xml`, not the document mimetype the table below
+needs. Part-name prefixes are reachable in the head window (`xl/theme/theme1.xml`
+sits at offset 477 in an openpyxl workbook) and are what the formats actually
+guarantee.
+
+Recorded rather than silently amended. Note also that `puremagic` returns the
+same four candidates for all three OOXML families at 0.40 confidence — below
+the existing 0.5 floor, and topped by `wordprocessingml.document` regardless of
+the real type — so deferring to it here would be worse than not asking.
+
+Plain `.zip` and `.jar` match none of these prefixes and fall through
+unchanged, which is what keeps Spec 8 §3.1's descent rule satisfiable.
+
+The mimetypes reported:
 
 | Family | Mimetype |
 | --- | --- |
