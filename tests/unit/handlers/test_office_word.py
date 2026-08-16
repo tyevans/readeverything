@@ -267,3 +267,81 @@ async def test_a_budget_truncates_and_says_so() -> None:
 
 async def test_reading_a_word_document_needs_no_capability() -> None:
     assert _handler(docx_bytes()).requires() == frozenset()
+
+
+@pytest.mark.parametrize(
+    ("affordance", "wrong"),
+    [
+        ("read_section", ReadRangeParams()),
+        ("read_range", ReadSectionParams()),
+        ("list_comments", ReadSectionParams()),
+        ("read_table", ReadSectionParams()),
+    ],
+)
+async def test_the_wrong_params_model_is_refused_rather_than_coerced(
+    affordance: str, wrong: object
+) -> None:
+    """A params model that does not match its affordance is a programming
+    error in the caller, not a degraded input from a file. Coercing it would
+    silently read a section when a range was asked for.
+    """
+    content = docx_bytes()
+    with pytest.raises(TypeError):
+        await _handler(content).invoke(_ref(content), affordance, wrong)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("affordance", "params"),
+    [
+        ("read_section", ReadSectionParams()),
+        ("read_range", ReadRangeParams()),
+        ("list_comments", ListCommentsParams()),
+        ("read_table", ReadTableParams()),
+    ],
+)
+async def test_every_affordance_degrades_on_an_unreadable_document(
+    affordance: str, params: object
+) -> None:
+    """No affordance raises about its input. All four, because a degrade path
+    that exists on three of them is the one that will be reached by the fourth.
+    """
+    content = b"this is not a word document at all"
+    rendition = await _handler(content).invoke(_ref(content), affordance, params)  # type: ignore[arg-type]
+    assert rendition.degraded
+
+
+async def test_an_unopenable_document_is_never_reported_as_having_no_comments() -> None:
+    """ "Carries no comments" is a claim about a document that was READ. Saying
+    it about a file that could not be opened tells an agent to stop looking for
+    something nothing ever checked — the same failure as calling a scanned page
+    empty.
+    """
+    content = b"this is not a word document at all"
+    rendition = await _handler(content).invoke(_ref(content), "list_comments", ListCommentsParams())
+    assert rendition.degraded
+    assert "no comments" not in _text(rendition)
+
+
+async def test_a_document_with_no_body_at_all_reports_that_rather_than_raising() -> None:
+    """Opened fine and carries nothing. Saying "could not be opened" here would
+    be a false report about a document this handler actually read.
+    """
+    content = docx_bytes(headings=(), table=None)
+    rendered = await _handler(content).represent(_ref(content), Budget(max_chars=None))
+    assert any("no body" in d.what for d in rendered.degradations)
+    assert "could not be opened" not in rendered.text
+
+
+async def test_a_heading_whose_style_carries_no_level_is_still_a_heading() -> None:
+    """Word's built-in `Heading` style has no trailing number. Treating it as
+    body text would drop a section from the table of contents.
+    """
+    from readeverything.handlers.office_word import _heading_level
+
+    class _Style:
+        name = "Heading"
+
+    class _Paragraph:
+        style = _Style()
+
+    assert _heading_level(_Paragraph()) == 1  # type: ignore[arg-type]

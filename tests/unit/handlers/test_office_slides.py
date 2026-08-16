@@ -252,3 +252,88 @@ async def test_a_budget_truncates_and_says_so() -> None:
 
 async def test_reading_a_deck_needs_no_capability() -> None:
     assert _handler(pptx_bytes()).requires() == frozenset()
+
+
+async def test_an_unopenable_deck_is_never_reported_as_embedding_no_pictures() -> None:
+    """ "Embeds no pictures" is a claim about a deck that was READ. Saying it
+    about a file that could not be opened tells an agent to stop looking for
+    something nothing ever checked.
+    """
+    content = b"not a presentation"
+    rendition = await _handler(content).invoke(_ref(content), "list_media", ListMediaParams())
+    assert rendition.degraded
+    assert "no pictures" not in _text(rendition)
+
+
+@pytest.mark.parametrize(
+    ("affordance", "params"),
+    [
+        ("read_slide", ReadSlideParams()),
+        ("list_media", ListMediaParams()),
+        ("describe_slide_image", DescribeSlideImageParams(question="What is shown?")),
+    ],
+)
+async def test_every_affordance_degrades_on_an_unreadable_deck(
+    affordance: str, params: object
+) -> None:
+    content = b"not a presentation"
+    rendition = await _handler(content, vision=FakeVision()).invoke(
+        _ref(content),
+        affordance,
+        params,  # type: ignore[arg-type]
+    )
+    assert rendition.degraded
+
+
+@pytest.mark.parametrize(
+    ("affordance", "wrong"),
+    [
+        ("read_slide", ListMediaParams()),
+        ("list_media", ReadSlideParams()),
+        ("describe_slide_image", ReadSlideParams()),
+    ],
+)
+async def test_the_wrong_params_model_is_refused_rather_than_coerced(
+    affordance: str, wrong: object
+) -> None:
+    content = pptx_bytes()
+    with pytest.raises(TypeError):
+        await _handler(content, vision=FakeVision()).invoke(
+            _ref(content),
+            affordance,
+            wrong,  # type: ignore[arg-type]
+        )
+
+
+async def test_asking_about_an_image_without_a_vision_model_raises_unknown_affordance() -> None:
+    """The affordance is not declared, so invoking it by name is an unknown
+    affordance rather than a degraded answer — negotiation, not an apology.
+    """
+    from readeverything.domain.errors import UnknownAffordanceError
+
+    content = pptx_bytes(picture_on=(2,))
+    with pytest.raises(UnknownAffordanceError):
+        await _handler(content).invoke(
+            _ref(content),
+            "describe_slide_image",
+            DescribeSlideImageParams(page=2, index=0, question="What is shown?"),
+        )
+
+
+async def test_a_deck_that_opens_with_no_slides_says_so_rather_than_claiming_it_is_unreadable() -> (
+    None
+):
+    content = pptx_bytes(titles=(), notes=())
+    rendered = await _handler(content).represent(_ref(content), Budget(max_chars=None))
+    assert any("no slides" in d.what for d in rendered.degradations)
+    assert "could not be opened" not in rendered.text
+
+
+async def test_a_slide_holding_only_a_picture_is_not_reported_as_empty() -> None:
+    """A slide with one diagram is not an empty slide, and saying nothing about
+    it would report the deck as shorter than it is.
+    """
+    content = pptx_bytes(titles=("",), body="", notes=(None,), picture_on=(1,))
+    rendered = await _handler(content).represent(_ref(content), Budget(max_chars=None))
+    assert rendered.text.strip()
+    assert "empty" not in rendered.text.lower()

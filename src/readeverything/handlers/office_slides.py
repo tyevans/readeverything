@@ -392,6 +392,12 @@ class OfficeSlidesHandler:
 
     async def _list_media(self, ref: SourceRef) -> Rendition:
         data = await self._source.read_bytes(ref.uri)
+        # Readability is checked FIRST, and the order is the whole point: a
+        # file that could not be opened embeds no pictures AND nothing else, so
+        # reporting "embeds no pictures" about it is a claim nothing
+        # established. "There are none" must mean the deck was read.
+        if self._parse(data) is None:
+            return self._degraded(ref, f"{ref.uri} could not be opened as a slide deck")
         pictures = self._pictures(data)
         if not pictures:
             # "There are none" and empty output are different answers, and only

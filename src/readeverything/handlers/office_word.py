@@ -471,6 +471,12 @@ class OfficeWordHandler:
 
     async def _list_comments(self, ref: SourceRef) -> Rendition:
         data = await self._source.read_bytes(ref.uri)
+        # Readability is checked FIRST, and the order is the whole point: a
+        # file that could not be opened has no comments AND no anything, so
+        # reporting "carries no comments" about it is a claim nothing
+        # established. "There are none" must mean the document was read.
+        if self._parse(data) is None:
+            return self._degraded(ref, f"{ref.uri} could not be opened as a Word document")
         comments = self._comments(data)
         if not comments:
             # "There are none" and empty output are different answers, and only
@@ -486,6 +492,8 @@ class OfficeWordHandler:
 
     async def _read_table(self, ref: SourceRef, index: int) -> Rendition:
         data = await self._source.read_bytes(ref.uri)
+        if self._parse(data) is None:
+            return self._degraded(ref, f"{ref.uri} could not be opened as a Word document")
         tables = self._tables(data)
         if index >= len(tables):
             return self._degraded(

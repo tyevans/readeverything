@@ -288,3 +288,70 @@ async def test_every_sheet_owns_at_least_one_character() -> None:
 
 async def test_reading_a_workbook_needs_no_capability() -> None:
     assert _handler(xlsx_bytes()).requires() == frozenset()
+
+
+@pytest.mark.parametrize(
+    ("affordance", "params"),
+    [
+        ("read_sheet", ReadSheetParams()),
+        ("read_cells", ReadCellsParams()),
+        ("read_cells", ReadCellsParams(formulas=True)),
+        ("list_sheets", ListSheetsParams()),
+    ],
+)
+async def test_every_affordance_degrades_on_an_unreadable_workbook(
+    affordance: str, params: object
+) -> None:
+    """No affordance raises about its input, and none of them reports an
+    unopenable file as an empty one.
+    """
+    content = b"not a workbook"
+    rendition = await _handler(content).invoke(_ref(content), affordance, params)  # type: ignore[arg-type]
+    assert rendition.degraded
+
+
+@pytest.mark.parametrize(
+    ("affordance", "wrong"),
+    [
+        ("read_sheet", ListSheetsParams()),
+        ("read_cells", ListSheetsParams()),
+        ("list_sheets", ReadSheetParams()),
+    ],
+)
+async def test_the_wrong_params_model_is_refused_rather_than_coerced(
+    affordance: str, wrong: object
+) -> None:
+    content = xlsx_bytes()
+    with pytest.raises(TypeError):
+        await _handler(content).invoke(_ref(content), affordance, wrong)  # type: ignore[arg-type]
+
+
+async def test_asking_for_a_missing_sheet_names_the_ones_that_exist() -> None:
+    """A degradation that only says "no" makes an agent guess again. Naming the
+    sheets turns one wrong call into one right one.
+    """
+    content = xlsx_bytes()
+    rendition = await _handler(content).invoke(
+        _ref(content), "read_cells", ReadCellsParams(name="Nope", a1_range="A1")
+    )
+    assert rendition.degraded
+    assert "Data" in _text(rendition)
+    assert "Notes" in _text(rendition)
+
+
+async def test_reading_formulas_from_a_sheet_that_is_not_there_degrades() -> None:
+    content = xlsx_bytes(formulas=True, cached=True)
+    rendition = await _handler(content).invoke(
+        _ref(content), "read_cells", ReadCellsParams(name="Nope", formulas=True)
+    )
+    assert rendition.degraded
+
+
+async def test_an_empty_sheet_is_named_rather_than_rendered_as_nothing() -> None:
+    """A sheet that exists and is empty is a different fact from a sheet that
+    is missing, and the flattened text must be able to say which.
+    """
+    content = ods_bytes(sheets=(("Data", (("a",),)), ("Empty", ())))
+    rendered = await _handler(content).represent(_ref(content), Budget(max_chars=None))
+    assert "Empty" in rendered.text
+    assert rendered.locator_map.length == len(rendered.text)
