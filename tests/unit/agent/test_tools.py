@@ -12,8 +12,13 @@ from readeverything.agent.tools import _render_rendition, build_tools
 from readeverything.domain.capability import CapabilitySet
 from readeverything.domain.card import Card
 from readeverything.domain.errors import UnknownAffordanceError
-from readeverything.domain.locators import BBox
-from readeverything.domain.rendition import ImageContent, Rendition, TextContent
+from readeverything.domain.locators import BBox, PageRef
+from readeverything.domain.rendition import (
+    Degradation,
+    ImageContent,
+    Rendition,
+    TextContent,
+)
 from readeverything.handlers.binary import BinaryHandler
 from readeverything.handlers.text import TextHandler
 from readeverything.pipeline.perception import Perception
@@ -212,3 +217,34 @@ def test_the_tool_list_is_the_same_length_for_every_file() -> None:
     """The docstring's rule: the tool list never varies with what was last
     looked at. Four tools, always."""
     assert len(build_tools(cast(Perception, RecordingPerception()))) == 4
+
+
+def test_a_renditions_provenance_reaches_the_reader() -> None:
+    """A field nobody renders is a field nobody reads.
+
+    A page image converted through LibreOffice is a *rendering* of a document,
+    not the document — fonts substitute. That fact belongs next to the image,
+    where a model deciding whether the type looks wrong can see it, rather than
+    in a dataclass the tool pack drops on the floor.
+    """
+    rendition = Rendition(
+        locator=PageRef(4),
+        content=TextContent("the fourth slide"),
+        degradations=(
+            Degradation(
+                what="rendered by a converter",
+                detail="fonts may have been substituted",
+            ),
+        ),
+    )
+
+    rendered = _render_rendition(rendition)
+
+    assert "rendered by a converter" in rendered
+    assert "fonts may have been substituted" in rendered
+
+
+def test_a_rendition_with_nothing_to_report_says_nothing() -> None:
+    """The overwhelmingly common case must not grow a noise line."""
+    rendered = _render_rendition(Rendition(locator=PageRef(1), content=TextContent("plain")))
+    assert rendered == "located at PageRef(page=1):\nplain"

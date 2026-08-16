@@ -1,7 +1,7 @@
 import pytest
 
 from readeverything.domain.locator_map import LocatorMap, LocatorSegment
-from readeverything.domain.locators import CharSpan, TimeSpan
+from readeverything.domain.locators import CharSpan, PageRef, TimeSpan
 from readeverything.domain.rendition import (
     Budget,
     CueSource,
@@ -69,3 +69,30 @@ def test_a_caption_can_say_it_was_written() -> None:
         source=CueSource.CAPTIONED,
     )
     assert cue.source is CueSource.CAPTIONED
+
+
+# --- provenance on a single answer ----------------------------------------
+
+
+def test_a_rendition_carries_no_degradations_by_default() -> None:
+    """Every producer that predates the field reports nothing, which is what
+    they meant. A default of anything else would put words in their mouth."""
+    assert Rendition(locator=PageRef(1), content=TextContent("x")).degradations == ()
+
+
+def test_a_rendition_can_say_what_is_wrong_with_it_rather_than_only_that_it_is() -> None:
+    """`degraded` is a bit; a converted page image needs a sentence.
+
+    A LibreOffice rendering of a PowerPoint is a rendering, not the thing
+    itself — fonts substitute — and that is a fact about an answer that is
+    otherwise perfectly good. It is not `degraded=True`, which would tell an
+    agent to distrust the image; it is provenance, and it needs somewhere to
+    go that is not the bit.
+    """
+    rendition = Rendition(
+        locator=PageRef(4),
+        content=TextContent("x"),
+        degradations=(Degradation(what="converted", detail="fonts may have been substituted"),),
+    )
+    assert not rendition.degraded
+    assert rendition.degradations[0].what == "converted"
