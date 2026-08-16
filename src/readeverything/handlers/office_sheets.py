@@ -61,8 +61,20 @@ from readeverything.domain.rendition import (
     Rendition,
     TextContent,
 )
+from readeverything.handlers.page_images import (
+    PageImageParams,
+    page_image_affordance,
+    render_page_image,
+)
 from readeverything.ports.observation import Observer, emit
+from readeverything.ports.rendering import DocumentRenderer
 from readeverything.ports.source import SourceReader
+
+#: What `page_image` renders one of: a page of the workbook's PRINT
+#: layout, which is a different thing from a sheet. A wide sheet spans
+#: several, and a reader asking about the arrangement of a chart wants
+#: what would come out of a printer rather than the cell grid.
+_RENDER_UNIT = "page"
 
 #: What `represent` calls itself when it narrates, matching every other handler.
 _OPERATION = "represent"
@@ -219,8 +231,15 @@ class OfficeSheetsHandler:
     handler_id: ClassVar[str] = "office_sheets"
     handler_version: ClassVar[int] = 1
 
-    def __init__(self, *, source: SourceReader, observer: Observer | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        source: SourceReader,
+        renderer: DocumentRenderer | None = None,
+        observer: Observer | None = None,
+    ) -> None:
         self._source = source
+        self._renderer = renderer
         self._observer = observer
 
     def requires(self) -> frozenset[Capability]:
@@ -228,7 +247,8 @@ class OfficeSheetsHandler:
         return frozenset()
 
     def affordances(self) -> tuple[Affordance, ...]:
-        return (
+        """Reading the cells needs nothing; rendering the print layout needs a converter."""
+        affordances: list[Affordance] = [
             Affordance(
                 name="read_sheet",
                 description="Return a page of one sheet's rows as delimited text.",
@@ -253,7 +273,15 @@ class OfficeSheetsHandler:
                 requires=frozenset(),
                 level=DetailLevel.SEGMENT,
             ),
-        )
+        ]
+        if self._renderer is not None:
+            # Declared, not published. The registry filters it out unless
+            # DOCUMENT_RENDER is genuinely available, which is what keeps a
+            # composition free to wire the converter unconditionally -- exactly
+            # as it wires ffmpeg -- without an agent ever seeing a tool that
+            # exists and apologises.
+            affordances.append(page_image_affordance(_RENDER_UNIT))
+        return tuple(affordances)
 
     # -- parsing ---------------------------------------------------------
 
@@ -471,8 +499,23 @@ class OfficeSheetsHandler:
                 if not isinstance(params, ListSheetsParams):
                     raise TypeError(f"expected ListSheetsParams, got {type(params).__name__}")
                 return await self._list_sheets(ref)
+            case "page_image":
+                if not isinstance(params, PageImageParams):
+                    raise TypeError(f"expected PageImageParams, got {type(params).__name__}")
+                return await self._page_image(ref, params)
             case _:
                 raise UnknownAffordanceError(name, (a.name for a in self.affordances()))
+
+    async def _page_image(self, ref: SourceRef, params: PageImageParams) -> Rendition:
+        if self._renderer is None:
+            raise UnknownAffordanceError("page_image", (a.name for a in self.affordances()))
+        return await render_page_image(
+            renderer=self._renderer,
+            source=self._source,
+            ref=ref,
+            params=params,
+            unit=_RENDER_UNIT,
+        )
 
     def _degraded(self, ref: SourceRef, detail: str) -> Rendition:
         """What every unreadable or out-of-range request returns.

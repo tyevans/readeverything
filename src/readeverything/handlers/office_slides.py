@@ -55,9 +55,21 @@ from readeverything.domain.rendition import (
     Rendition,
     TextContent,
 )
+from readeverything.handlers.page_images import (
+    PageImageParams,
+    page_image_affordance,
+    render_page_image,
+)
 from readeverything.ports.observation import Observer, emit
+from readeverything.ports.rendering import DocumentRenderer
 from readeverything.ports.source import SourceReader
 from readeverything.ports.vision import VisionModel
+
+#: What `page_image` renders one of. A deck's pagination is semantic --
+#: slide 7 is a thing an author made -- so this is the format where a
+#: rendering answers the most: arrangement, emphasis and imagery that no
+#: text extraction recovers.
+_RENDER_UNIT = "slide"
 
 #: What `represent` calls itself when it narrates, matching every other handler.
 _OPERATION = "represent"
@@ -134,10 +146,12 @@ class OfficeSlidesHandler:
         *,
         source: SourceReader,
         vision: VisionModel | None = None,
+        renderer: DocumentRenderer | None = None,
         observer: Observer | None = None,
     ) -> None:
         self._source = source
         self._vision = vision
+        self._renderer = renderer
         self._observer = observer
 
     def requires(self) -> frozenset[Capability]:
@@ -176,6 +190,18 @@ class OfficeSlidesHandler:
                     level=DetailLevel.DEEP,
                 )
             )
+        if self._renderer is not None:
+            # Declared, not published. The registry filters it out unless
+            # DOCUMENT_RENDER is genuinely available, which is what keeps a
+            # composition free to wire the converter unconditionally -- exactly
+            # as it wires ffmpeg -- without an agent ever seeing a tool that
+            # exists and apologises.
+            #
+            # Independent of `vision` above, and deliberately: a converter with
+            # no vision model still hands back a slide image for something else
+            # to read, and a vision model with no converter still describes an
+            # embedded picture. Two capabilities, two affordances.
+            affordances.append(page_image_affordance(_RENDER_UNIT))
         return tuple(affordances)
 
     # -- parsing ---------------------------------------------------------
@@ -364,8 +390,23 @@ class OfficeSlidesHandler:
                         f"expected DescribeSlideImageParams, got {type(params).__name__}"
                     )
                 return await self._describe_slide_image(ref, params)
+            case "page_image":
+                if not isinstance(params, PageImageParams):
+                    raise TypeError(f"expected PageImageParams, got {type(params).__name__}")
+                return await self._page_image(ref, params)
             case _:
                 raise UnknownAffordanceError(name, (a.name for a in self.affordances()))
+
+    async def _page_image(self, ref: SourceRef, params: PageImageParams) -> Rendition:
+        if self._renderer is None:
+            raise UnknownAffordanceError("page_image", (a.name for a in self.affordances()))
+        return await render_page_image(
+            renderer=self._renderer,
+            source=self._source,
+            ref=ref,
+            params=params,
+            unit=_RENDER_UNIT,
+        )
 
     def _degraded(self, ref: SourceRef, detail: str) -> Rendition:
         """What every unreadable or out-of-range request returns.

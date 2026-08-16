@@ -61,8 +61,21 @@ from readeverything.domain.rendition import (
     Rendition,
     TextContent,
 )
+from readeverything.handlers.page_images import (
+    PageImageParams,
+    page_image_affordance,
+    render_page_image,
+)
 from readeverything.ports.observation import Observer, emit
+from readeverything.ports.rendering import DocumentRenderer
 from readeverything.ports.source import SourceReader
+
+#: What `page_image` renders one of. The structural reader has no pages
+#: at all -- a `.docx` is not laid out until something lays it out -- so
+#: pagination is something conversion ADDS here rather than reproduces.
+#: That is why rendering earns its place for this format and not only
+#: for decks.
+_RENDER_UNIT = "page"
 
 #: What `represent` calls itself when it narrates, matching every other handler.
 _OPERATION = "represent"
@@ -162,8 +175,15 @@ class OfficeWordHandler:
     handler_id: ClassVar[str] = "office_word"
     handler_version: ClassVar[int] = 1
 
-    def __init__(self, *, source: SourceReader, observer: Observer | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        source: SourceReader,
+        renderer: DocumentRenderer | None = None,
+        observer: Observer | None = None,
+    ) -> None:
         self._source = source
+        self._renderer = renderer
         self._observer = observer
 
     def requires(self) -> frozenset[Capability]:
@@ -171,7 +191,8 @@ class OfficeWordHandler:
         return frozenset()
 
     def affordances(self) -> tuple[Affordance, ...]:
-        return (
+        """Reading the text needs nothing; rendering a page needs a converter."""
+        affordances: list[Affordance] = [
             Affordance(
                 name="read_section",
                 description="Return one section of the document: a heading and the text under it.",
@@ -200,7 +221,15 @@ class OfficeWordHandler:
                 requires=frozenset(),
                 level=DetailLevel.SEGMENT,
             ),
-        )
+        ]
+        if self._renderer is not None:
+            # Declared, not published. The registry filters it out unless
+            # DOCUMENT_RENDER is genuinely available, which is what keeps a
+            # composition free to wire the converter unconditionally -- exactly
+            # as it wires ffmpeg -- without an agent ever seeing a tool that
+            # exists and apologises.
+            affordances.append(page_image_affordance(_RENDER_UNIT))
+        return tuple(affordances)
 
     # -- parsing ---------------------------------------------------------
 
@@ -421,8 +450,23 @@ class OfficeWordHandler:
                 if not isinstance(params, ReadTableParams):
                     raise TypeError(f"expected ReadTableParams, got {type(params).__name__}")
                 return await self._read_table(ref, params.index)
+            case "page_image":
+                if not isinstance(params, PageImageParams):
+                    raise TypeError(f"expected PageImageParams, got {type(params).__name__}")
+                return await self._page_image(ref, params)
             case _:
                 raise UnknownAffordanceError(name, (a.name for a in self.affordances()))
+
+    async def _page_image(self, ref: SourceRef, params: PageImageParams) -> Rendition:
+        if self._renderer is None:
+            raise UnknownAffordanceError("page_image", (a.name for a in self.affordances()))
+        return await render_page_image(
+            renderer=self._renderer,
+            source=self._source,
+            ref=ref,
+            params=params,
+            unit=_RENDER_UNIT,
+        )
 
     def _degraded(self, ref: SourceRef, detail: str) -> Rendition:
         """What every unreadable or out-of-range request returns.
