@@ -91,6 +91,10 @@ CONFINED: dict[str, set[str]] = {
         "adapters/ffmpeg_captions.py",
         # ffmpeg, same pattern, cutting a bounded range to stdout.
         "adapters/ffmpeg_clip.py",
+        # soffice, same pattern, converting a document to PDF -- plus
+        # `to_thread` for hashing the source and for pdfium's synchronous,
+        # CPU-bound rendering.
+        "adapters/soffice_renderer.py",
         # whisper's transcribe() is synchronous and CPU-bound; run in a
         # thread so it doesn't block the event loop.
         "adapters/whisper_transcriber.py",
