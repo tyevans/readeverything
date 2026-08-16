@@ -43,6 +43,10 @@ CONFINED: dict[str, set[str]] = {
     # cheap document facts, and the PDF handler extracts text — which is not a
     # probe's job, and no handler imports an adapter.
     "pypdfium2": {"adapters/pdfium_probe.py", "handlers/pdf.py"},
+    # ODF has no maintained reader — odfpy is unmaintained — so `adapters/odf.py`
+    # walks the flat XML parts itself. lxml is that walk and nothing else in the
+    # library touches it.
+    "lxml": {"adapters/odf.py"},
     "subprocess": set(),
     # asyncio's subprocess API is how binary_probe.py spawns external
     # executables; the other three files use asyncio only for async I/O, but

@@ -117,6 +117,13 @@ ignore_missing_imports = true
 module = "openpyxl.*"
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+# Stubs ship separately as `lxml-stubs` and are not a runtime dependency;
+# confined to one adapter (see tests/unit/test_dependencies_stay_confined.py),
+# so this is scoped there rather than globally.
+module = "lxml.*"
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
