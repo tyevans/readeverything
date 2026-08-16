@@ -11,6 +11,7 @@ from readeverything.adapters.tar_archive import TarArchiveOpener
 from readeverything.adapters.zip_archive import ZipArchiveOpener
 from readeverything.domain.errors import UnknownAffordanceError
 from readeverything.domain.identity import ContentHash, MediaKind, MimeType, SourceRef
+from readeverything.domain.locators import ByteRange
 from readeverything.domain.rendition import Budget, TextContent
 from readeverything.handlers.archive import ArchiveHandler, ListEntriesParams
 from readeverything.testing.handler_compliance import MediaHandlerCompliance
@@ -182,6 +183,54 @@ async def test_represent_honours_the_budget(handler: ArchiveHandler, built: byte
     rendered = await handler.represent(_ref(len(built)), Budget(max_chars=5))
     assert len(rendered.text) == 5
     assert any(d.what == "text truncated" for d in rendered.degradations)
+
+
+async def test_a_caller_can_supply_a_single_opener_of_their_own(
+    tmp_path: Path, built: bytes
+) -> None:
+    """§9's extension point. A bare opener needs no composite to wrap it."""
+    handler = ArchiveHandler(
+        source=_PathSource(content=built, root=tmp_path), archives=ZipArchiveOpener()
+    )
+    card = await handler.describe(_ref(len(built)))
+    assert card.facts["entry_count"] == 2
+
+
+async def test_a_format_no_opener_claims_is_reported_unreadable(
+    tmp_path: Path, built: bytes
+) -> None:
+    """Not a crash and not a silent empty listing: an honest "no"."""
+    handler = ArchiveHandler(
+        source=_PathSource(content=built, root=tmp_path),
+        archives=CompositeOpener(openers=[TarArchiveOpener()]),
+    )
+    card = await handler.describe(_ref(len(built)))
+    assert card.facts["readable"] == "no"
+
+
+async def test_a_solid_container_locates_entries_without_inventing_offsets(
+    tmp_path: Path,
+) -> None:
+    """A gzip stream has no seekable offsets, so an outline must not claim any."""
+    import io
+    import tarfile
+
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+        info = tarfile.TarInfo("a.txt")
+        info.size = 5
+        archive.addfile(info, io.BytesIO(b"hello"))
+    content = buffer.getvalue()
+    handler = _handler_over(tmp_path, content)
+    ref = SourceRef(
+        uri="release.tar.gz",
+        mime=MimeType.parse("application/gzip"),
+        content_hash=ContentHash("0" * 8),
+        size_bytes=len(content),
+    )
+    card = await handler.describe(ref)
+    assert card.facts["solid"] == "yes"
+    assert not any(isinstance(segment.locator, ByteRange) for segment in card.outline)
 
 
 async def test_an_unknown_affordance_raises(handler: ArchiveHandler, built: bytes) -> None:

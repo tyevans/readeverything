@@ -240,6 +240,36 @@ async def test_the_composite_refuses_to_be_used_as_a_single_opener() -> None:
         composite.open_member("anything", "member")
 
 
+async def test_a_caller_can_supply_a_single_opener_of_their_own(tmp_path: Path) -> None:
+    """§9's promised extension point: `.7z` without this repo taking a dep.
+
+    A bare `ArchiveOpener` is accepted wherever a composite is, so a caller
+    wiring exactly one format never has to wrap it in one.
+    """
+    _zip(tmp_path, "a.zip", {"inner.txt": b"hello"})
+    source = NestedSource(
+        LocalFileSource(root=tmp_path),
+        limits=ContainerLimits(),
+        archives=ZipArchiveOpener(),
+        detector=PuremagicDetector(),
+    )
+    assert await source.read_bytes("a.zip!inner.txt") == b"hello"
+    assert sorted(await source.walk(".")) == ["a.zip", "a.zip!inner.txt"]
+
+
+async def test_a_single_opener_refuses_a_format_it_does_not_claim(tmp_path: Path) -> None:
+    _targz(tmp_path, "a.tar.gz", {"inner.txt": b"hello"})
+    source = NestedSource(
+        LocalFileSource(root=tmp_path),
+        limits=ContainerLimits(),
+        archives=ZipArchiveOpener(),
+        detector=PuremagicDetector(),
+    )
+    with pytest.raises(SourceUnreadableError, match="not a container"):
+        await source.read_bytes("a.tar.gz!inner.txt")
+    assert sorted(await source.walk(".")) == ["a.tar.gz"]
+
+
 async def test_walk_returns_members_inline(tmp_path: Path) -> None:
     (tmp_path / "loose.txt").write_bytes(b"x")
     _zip(tmp_path, "docs.zip", {"report.txt": b"y"})

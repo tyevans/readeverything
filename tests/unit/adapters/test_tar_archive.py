@@ -123,6 +123,21 @@ async def test_one_archive_larger_than_the_whole_bound_is_refused(tmp_path: Path
         await opener.aclose()
 
 
+@pytest.mark.parametrize(
+    ("mode", "name"),
+    [("w:bz2", "a.tar.bz2"), ("w:xz", "a.tar.xz")],
+)
+async def test_reads_the_other_solid_compressions(tmp_path: Path, mode: str, name: str) -> None:
+    """bzip2 and xz take the same solid path gzip does, via their own magic."""
+    path = _tar(tmp_path, {"a.txt": b"hello world"}, mode=mode, name=name)
+    opener = TarArchiveOpener()
+    try:
+        assert b"".join([c async for c in opener.open_member(path, "a.txt")]) == b"hello world"
+        assert list(opener.materialised) == [path]
+    finally:
+        await opener.aclose()
+
+
 async def test_a_missing_member_raises(tmp_path: Path) -> None:
     path = _tar(tmp_path, {"a.txt": b"hi"})
     with pytest.raises(SourceUnreadableError, match=r"nope\.txt"):
