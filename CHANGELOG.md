@@ -62,6 +62,25 @@ words.
   wrong; it is a rendering, and that is a third thing. The agent tool pack
   prints these as a trailing `note:` line.
 
+### Fixed
+
+- **A container uri whose member name contains `!` addressed the wrong file.**
+  The escape was a doubled separator, and doubling a separator cannot be
+  unambiguous: `("a.zip", "!inner")` and `("a.zip!", "inner")` both encoded to
+  `a.zip!!!inner`, so one of the two could never be read back — and a member
+  named just `!` encoded to something that failed to parse at all. The escape
+  is now `\`, which escapes itself: `\!` is a literal separator and `\\` a
+  literal backslash.
+
+  **This changes the uri text** for the small number of members whose names
+  contain `!` or `\`. Nothing else moves — a uri with neither is byte-for-byte
+  what it was, which is every uri anyone has. A zip written on Windows
+  separates member names with `\`, so those now arrive doubled; `join_uri` and
+  `walk` already spell them correctly, and only a hand-written uri notices.
+
+  Found by the round-trip property test that was written for exactly this and
+  had been passing on easier examples for a year.
+
 ### Changed
 
 - **A rendered page says it is a rendering.** LibreOffice's rendering of a
