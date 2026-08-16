@@ -29,6 +29,14 @@ class Capability(StrEnum):
     EXIFTOOL = "exiftool"
     LIBREOFFICE = "libreoffice"
     TESSERACT = "tesseract"
+    #: Turning a format pypdfium2 cannot open into faithful page images.
+    #:
+    #: Deliberately named for what it DOES rather than for LibreOffice, unlike
+    #: `LIBREOFFICE` above — a `DocumentRenderer` is a port, and a caller may
+    #: supply a converter that is not LibreOffice at all. `LIBREOFFICE` remains
+    #: what it always was: "that particular binary answered a version probe".
+    #: No bundled handler consults it, and the two are not interchangeable.
+    DOCUMENT_RENDER = "document_render"
 
 
 @dataclass(frozen=True, slots=True)

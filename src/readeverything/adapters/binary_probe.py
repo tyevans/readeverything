@@ -30,6 +30,12 @@ DEFAULT_EXECUTABLES: Mapping[Capability, tuple[str, str]] = {
     Capability.EXIFTOOL: ("exiftool", "-ver"),
     Capability.LIBREOFFICE: ("libreoffice", "--version"),
     Capability.TESSERACT: ("tesseract", "--version"),
+    # `soffice`, not `libreoffice`, and for two reasons. It is the executable
+    # `SofficeRenderer` actually spawns, so probing anything else could report
+    # the capability present via a binary nothing runs; and `soffice --version`
+    # prints a version and exits 0, where `libreoffice -version` prints the
+    # deprecation warning `_as_revision` exists to reject.
+    Capability.DOCUMENT_RENDER: ("soffice", "--version"),
 }
 
 #: Prefixes that mean the tool talked to us rather than identified itself.
