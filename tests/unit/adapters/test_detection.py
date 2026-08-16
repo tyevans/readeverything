@@ -1,8 +1,18 @@
+import io
+import zipfile
+
 import pytest
 
 from readeverything.adapters.detection import PuremagicDetector
+from readeverything.adapters.ooxml import (
+    ODF_TEXT_MIME,
+    SHEETS_MIME,
+    SLIDES_MIME,
+    WORD_MIME,
+)
 from readeverything.domain.identity import MimeType
 from tests.fixtures_media import audio_only_m4a, ffmpeg_available, video_with_audio
+from tests.fixtures_office import docx_bytes, odt_bytes, pptx_bytes, xlsx_bytes
 
 PNG_HEADER = b"\x89PNG\r\n\x1a\n" + b"\x00" * 24
 
@@ -131,3 +141,49 @@ async def test_a_weak_signature_still_wins_over_nothing_at_all() -> None:
     sndr_only = b"\x00\x00\x00\x08sndr" + b"\xff" * 24
     detected = await PuremagicDetector().detect("mystery", sndr_only)
     assert detected != MimeType.parse("text/plain")
+
+
+async def test_a_docx_is_not_reported_as_a_zip() -> None:
+    """A `.docx` IS a zip, and puremagic says so. Reporting that dispatches an
+    organisation's policy document to a hex dump.
+    """
+    mime = await PuremagicDetector().detect("policy.docx", docx_bytes()[:4096])
+    assert str(mime) == WORD_MIME
+
+
+async def test_a_spreadsheet_is_told_apart_from_a_document_by_content() -> None:
+    """puremagic returns the SAME four candidates for all three OOXML families,
+    every one at 0.40 confidence — below `_SIGNATURE_FLOOR`, and topped by
+    `wordprocessingml.document` regardless of what the file actually is. Taking
+    its answer would label every spreadsheet a Word document.
+    """
+    detector = PuremagicDetector()
+    word = await detector.detect("a.docx", docx_bytes()[:4096])
+    sheet = await detector.detect("b.xlsx", xlsx_bytes()[:4096])
+    slides = await detector.detect("c.pptx", pptx_bytes()[:4096])
+    assert {str(word), str(sheet), str(slides)} == {WORD_MIME, SHEETS_MIME, SLIDES_MIME}
+
+
+async def test_an_office_document_is_detected_from_content_not_its_name() -> None:
+    """The spec's rule: detection must not be extension-driven. A deck named
+    `.bin` is still a deck.
+    """
+    mime = await PuremagicDetector().detect("mystery.bin", pptx_bytes()[:4096])
+    assert str(mime) == SLIDES_MIME
+
+
+async def test_an_odt_is_detected_from_its_stored_mimetype_entry() -> None:
+    mime = await PuremagicDetector().detect("notes.odt", odt_bytes()[:4096])
+    assert str(mime) == ODF_TEXT_MIME
+
+
+async def test_a_plain_zip_is_still_a_plain_zip() -> None:
+    """Spec 8 descends into archives. If this refinement claimed every zip,
+    archive descent would have nothing left to descend into.
+    """
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("notes.txt", "hello")
+    mime = await PuremagicDetector().detect("bundle.zip", buffer.getvalue()[:4096])
+    assert str(mime) != WORD_MIME
+    assert "opendocument" not in str(mime)

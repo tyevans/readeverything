@@ -3,6 +3,8 @@
 Order is deliberate and is the whole point of the module:
 
 0. An ISO BMFF `ftyp` box, checked directly. See `_is_iso_bmff`.
+0.5. A zip container that is really an office document, classified by the part
+   names in its head. See `adapters/ooxml.office_mimetype`.
 1. A magic signature in the content, *above a confidence floor*. Authoritative
    when present. See `_SIGNATURE_FLOOR` for why the floor is not optional.
 2. The filename's extension. A claim, consulted only when the bytes are silent.
@@ -40,6 +42,7 @@ import mimetypes
 
 import puremagic
 
+from readeverything.adapters.ooxml import office_mimetype
 from readeverything.domain.identity import MimeType
 
 _OCTET_STREAM = MimeType.parse("application/octet-stream")
@@ -120,6 +123,25 @@ class PuremagicDetector:
                 except ValueError:
                     pass
             return MimeType.parse("video/mp4")
+
+        # An office document is a zip, and saying so is true and useless: it
+        # sends an organisation's policy document to the hex-dump fallback.
+        # Checked before the signature loop for the same reason ISO BMFF is —
+        # puremagic's answer here is not a weaker version of this one, it is
+        # noise. Measured, it returns the identical four candidates for a
+        # .docx, a .pptx and an .xlsx, every one at 0.40 confidence and topped
+        # by `wordprocessingml.document` whatever the file actually is.
+        #
+        # This is also what keeps archive descent honest: a `.docx` gets a
+        # specific mimetype that a handler claims, so `walk` treats it as a
+        # document, while a plain `.zip` falls through this branch untouched
+        # and stays an archive.
+        office = office_mimetype(head)
+        if office is not None:
+            try:
+                return MimeType.parse(office)
+            except ValueError:
+                pass
 
         for match in matches:
             if match.mime_type:
