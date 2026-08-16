@@ -7,6 +7,88 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+A slide is a visual artifact, and asking what a chart shows no longer means
+reading the words around it. With LibreOffice installed, office documents hand
+back page images — and the legacy formats that used to hex-dump hand back
+words.
+
+### Added
+
+- **`page_image` on the Word, slide and spreadsheet handlers.** One page as a
+  PNG, at whatever dpi you ask for, straight into the vision path that already
+  reads PDFs and photographs. A Word document gains pagination this way that
+  the structural reader genuinely does not have — a `.docx` has no pages until
+  something lays it out — and a spreadsheet's page is its print layout rather
+  than its cell grid.
+- **`describe_slide` on the slide handler**, when a vision model and a
+  converter are both available. It renders the slide and asks the model about
+  it in one call, and the answer is located at the slide — where chaining
+  `page_image` into `ask_about_image` costs two round trips and a schema read
+  to express one intent. It is a different question from
+  `describe_slide_image`, which asks about a picture the author *embedded*;
+  this one asks about the slide as an audience saw it.
+- **Legacy `.doc`, `.ppt` and `.xls` are readable**, where 0.3.0 declared them
+  out of scope. They get a card, page text and page images. They arrive as a
+  capability rather than as a dependency: with no converter they fall through
+  to the hex dump exactly as before, so nothing regresses on a machine that
+  does not have one.
+- **A `DOCUMENT_RENDER` capability and a `DocumentRenderer` port.** The fourth
+  thing this library negotiates rather than requires, after vision,
+  transcription and ffmpeg. `build_perception(renderer=...)` points it at a
+  converter of your own; `renderer=NullRenderer()` turns rendering off even on
+  a machine that has LibreOffice, which is how a test gets determinism without
+  uninstalling software.
+- **A `soffice` adapter.** It converts a document to PDF **once**, stores that
+  in the artifact store under the source's content hash, and renders every page
+  from it — so a four-hundred-slide deck pays the conversion once per machine
+  rather than once per slide.
+- **`Rendition.degradations`.** A rendition could previously only say *that*
+  something was wrong with it, via a boolean. A converted page image is not
+  wrong; it is a rendering, and that is a third thing. The agent tool pack
+  prints these as a trailing `note:` line.
+
+### Changed
+
+- **A rendered page says it is a rendering.** LibreOffice's rendering of a
+  PowerPoint is a rendering and not the thing itself: fonts substitute when the
+  original's are not installed, and layout engines differ. Every rendered page
+  carries a `Degradation` naming the converter, and so does the text of a
+  converted legacy file, where the wording is the original's but the ordering
+  is the importer's. An agent reading type off a slide should not report the
+  substitute as the author's choice.
+- **PDF page rendering moved into `adapters/pdfium_render.py`**, which the PDF
+  handler now delegates to. No behavior changed; the renderer needed the same
+  code and an adapter cannot import a handler.
+
+### Notes
+
+- **Rendering never happens during `inspect` or a directory listing.** Every
+  rendering affordance is `DEEP`. Listing a folder must not convert a deck.
+- **Conversion runs with macro execution disabled**, in a private LibreOffice
+  profile, under a bounded timeout that kills the process. This is the only
+  place in the library where a document could execute code, and LibreOffice has
+  no command-line flag for it — macro policy is a profile setting, so the
+  adapter writes one before the first launch. Conversions also serialise, one
+  at a time: `soffice` is not concurrency-safe across processes sharing a
+  profile.
+- **The legacy OLE2 formats are detected as a single family, not three.** All
+  three share the compound-file header, and it is indistinguishable within the
+  4096 bytes detection reads — so a real `.doc`, `.ppt` and `.xls` all report
+  `application/msword`. Telling them apart needs a full OLE2 directory walk,
+  which this library does not do. It costs nothing in practice, because it is
+  the **converter**, not the mimetype, that determines how the file is read:
+  a `.ppt` labelled `application/msword` still opens in Impress. What it costs
+  is the right to say which application made the file, so the card does not —
+  it reports the page count it observed from the conversion. Same shape as
+  0.3.0's note about a plain zip under `word/`/`ppt/`/`xl/`: a real
+  misdetection, degrading honestly rather than silently.
+- **No bundled binary and no new Python dependency.** LibreOffice is ~500MB and
+  not pip-installable, so there is no new extra for rendering. pypdfium2, which
+  turns the converted PDF into images, already ships in `documents`.
+- Rendering a deck **inside a tarball** works, and nothing was written to make
+  it: a converter takes a path, and 0.3.0's container descent already
+  materialises a member on request.
+
 ## [0.3.0] - 2026-08-15
 
 An archive is a directory now, and an office document is a document. The two

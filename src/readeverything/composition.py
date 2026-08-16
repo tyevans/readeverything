@@ -20,6 +20,7 @@ from readeverything.adapters.hashing import ContentHasher, StatMemo
 from readeverything.adapters.local_source import LocalFileSource
 from readeverything.adapters.model_probe import ModelProbe
 from readeverything.adapters.nested_source import CompositeOpener, NestedSource
+from readeverything.adapters.null_renderer import NullRenderer
 from readeverything.adapters.probing import discover
 from readeverything.adapters.semaphore_limiter import SemaphoreLimiter
 from readeverything.adapters.tar_archive import TarArchiveOpener
@@ -40,6 +41,7 @@ from readeverything.ports.limits import Limiter
 from readeverything.ports.observation import Observer
 from readeverything.ports.probe import CapabilityProbe
 from readeverything.ports.recognition import TextRecognizer
+from readeverything.ports.rendering import DocumentRenderer
 from readeverything.ports.source import FileSource, SourceReader
 from readeverything.ports.transcription import Transcriber
 from readeverything.ports.vision import VisionModel
@@ -114,7 +116,10 @@ def _optional_pdf_handler(
 
 
 def _optional_office_handlers(
-    source: SourceReader, vision: VisionModel | None, observer: Observer | None
+    source: SourceReader,
+    vision: VisionModel | None,
+    renderer: DocumentRenderer | None,
+    observer: Observer | None,
 ) -> list[MediaHandler]:
     """The three office handlers, each present only if its own reader imports.
 
@@ -128,6 +133,12 @@ def _optional_office_handlers(
     Only the slides handler takes `vision`: a picture embedded in a deck is the
     one thing in these three formats a model has to look at. Word and
     spreadsheet content is text all the way down.
+
+    All three take `renderer`, and every one of them merely GAINS `page_image`
+    from it -- the affordance's own `requires` is what decides whether it is
+    ever published. `OfficeLegacyHandler` is the one that requires a converter
+    outright, and it is built separately below because a handler with no reader
+    at all should not be constructed.
     """
     handlers: list[MediaHandler] = []
     try:
@@ -135,20 +146,78 @@ def _optional_office_handlers(
     except ImportError:
         pass
     else:
-        handlers.append(OfficeWordHandler(source=source, observer=observer))
+        handlers.append(OfficeWordHandler(source=source, renderer=renderer, observer=observer))
     try:
         from readeverything.handlers.office_slides import OfficeSlidesHandler
     except ImportError:
         pass
     else:
-        handlers.append(OfficeSlidesHandler(source=source, vision=vision, observer=observer))
+        handlers.append(
+            OfficeSlidesHandler(source=source, vision=vision, renderer=renderer, observer=observer)
+        )
     try:
         from readeverything.handlers.office_sheets import OfficeSheetsHandler
     except ImportError:
         pass
     else:
-        handlers.append(OfficeSheetsHandler(source=source, observer=observer))
+        handlers.append(OfficeSheetsHandler(source=source, renderer=renderer, observer=observer))
     return handlers
+
+
+def _renderer_to_wire(
+    renderer: DocumentRenderer | None,
+    artifacts: ArtifactStore,
+    limiter: Limiter,
+) -> DocumentRenderer | None:
+    """The converter the handlers get, or None for "no rendering at all".
+
+    Three cases, and the middle one is the interesting one:
+
+    * `None` -- build a `SofficeRenderer` and wire it UNCONDITIONALLY, exactly
+      as `_video_handler` wires ffmpeg. There is no Python package to guard
+      here; whether the binary exists is a capability question, and answering
+      it by not constructing the object would reintroduce the "tool exists but
+      returns sorry" trap from the other side. The `BinaryProbe` decides, and
+      the affordances' `requires` enforces the decision.
+    * a `NullRenderer` -- None. It is a sentinel meaning "off", and it has to
+      be handled here rather than by letting it through, because a renderer
+      that reached the handlers would publish `page_image` on any machine whose
+      probe found soffice. A caller who passes it wants determinism in CI and
+      must get it.
+    * anything else -- wire it, and declare `DOCUMENT_RENDER` from its own
+      revision (see `build_perception`). A caller pointing at their own
+      converter must not need LibreOffice installed for the library to believe
+      them.
+
+    It shares the caller's artifact store, so a converted PDF is cached exactly
+    like every other derived artifact -- two stores would mean a persistent
+    cache still paid for every conversion at every process start.
+    """
+    if isinstance(renderer, NullRenderer):
+        return None
+    if renderer is not None:
+        return renderer
+    from readeverything.adapters.soffice_renderer import SofficeRenderer
+
+    return SofficeRenderer(artifacts=artifacts, limiter=limiter)
+
+
+def _legacy_handler(
+    source: SourceReader, renderer: DocumentRenderer | None, observer: Observer | None
+) -> list[MediaHandler]:
+    """`OfficeLegacyHandler`, only when there is something for it to read with.
+
+    Unlike the three modern office handlers this one REQUIRES the capability,
+    so with no renderer wired at all it is not constructed -- its constructor
+    does not accept `None`, deliberately. When a renderer IS wired the registry
+    still drops it unless `DOCUMENT_RENDER` is genuinely available, and the
+    files keep falling through to `BinaryHandler`'s hex dump.
+    """
+    if renderer is None:
+        return []
+    from readeverything.handlers.office_legacy import OfficeLegacyHandler
+
+    return [OfficeLegacyHandler(source=source, renderer=renderer, observer=observer)]
 
 
 def _video_handler(
@@ -304,6 +373,7 @@ async def build_perception(
     probe_binaries: bool = True,
     observer: Observer | None = None,
     limiter: Limiter | None = None,
+    renderer: DocumentRenderer | None = None,
     containers: ContainerLimits | None = DESCEND_INTO_CONTAINERS,
     archives: ArchiveOpener | None = None,
 ) -> Perception:
@@ -340,6 +410,16 @@ async def build_perception(
     and bounding that here too would only fight it. The bound this default
     supplies is strictly within a single file's read.
 
+    `renderer` controls faithful rendering of office formats. `None` -- the
+    default -- builds a `SofficeRenderer` and lets the binary probe decide
+    whether `DOCUMENT_RENDER` is available, so installing LibreOffice and
+    changing nothing else is enough to make `page_image` appear. Passing a
+    renderer of your own points the library at a different converter and
+    declares the capability from that renderer's `revision`, with no probe
+    involved. Passing `NullRenderer()` turns rendering OFF even on a machine
+    that has LibreOffice, because a caller who wants determinism in CI must be
+    able to get it without uninstalling software.
+
     `containers` controls descent into archives. It defaults to
     `ContainerLimits()` -- descent ON, because a library whose promise is
     "read everything" should read the tarball. Passing `None` disables it and
@@ -350,11 +430,15 @@ async def build_perception(
     """
     source, openers = _source_and_openers(root, containers, archives)
     limiter = SemaphoreLimiter() if limiter is None else limiter
+    # Built before the handlers, not after, because the renderer shares it.
+    artifacts = InMemoryArtifactStore() if artifacts is None else artifacts
+    wired_renderer = _renderer_to_wire(renderer, artifacts, limiter)
     handlers: list[MediaHandler] = [
         TextHandler(source=source, observer=observer),
         *_optional_image_handler(source, vision, observer),
         *_optional_pdf_handler(source, vision, observer),
-        *_optional_office_handlers(source, vision, observer),
+        *_optional_office_handlers(source, vision, wired_renderer, observer),
+        *_legacy_handler(source, wired_renderer, observer),
         *_video_handler(source, vision, transcriber, captions, watcher, observer, limiter),
         *_audio_handler(source, transcriber, observer),
         ArchiveHandler(source=source, archives=openers, observer=observer),
@@ -374,6 +458,18 @@ async def build_perception(
         capabilities = await discover(
             probes=probes, capabilities=_capabilities_handlers_can_use(handlers)
         )
+        if renderer is not None and wired_renderer is not None:
+            # A caller's own converter is not something a binary probe can find,
+            # so it is DECLARED rather than discovered. Its revision enters the
+            # capability fingerprint and therefore every artifact cache key,
+            # which is the point: two different converters must not share
+            # cached renderings.
+            capabilities = CapabilitySet.of(
+                {
+                    **capabilities.revisions,
+                    Capability.DOCUMENT_RENDER: wired_renderer.revision,
+                }
+            )
     elif vision is not None and Capability.VISION in capabilities.revisions:
         declared = capabilities.revisions[Capability.VISION]
         if declared != vision.model_id:
@@ -388,6 +484,6 @@ async def build_perception(
         detector=PuremagicDetector(),
         hasher=ContentHasher(source=source, memo=StatMemo()),
         registry=MimeTypeRegistry(handlers=handlers, capabilities=capabilities),
-        artifacts=InMemoryArtifactStore() if artifacts is None else artifacts,
+        artifacts=artifacts,
         memo=ResolutionMemo(),
     )

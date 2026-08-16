@@ -120,9 +120,10 @@ service.
 | Text, JSON, XML | `text` | `read_range` | nothing extra |
 | Images | `image` | `crop_region` always; `describe_image` and `ocr` when a vision model is supplied | `images` extra (Pillow) for image handling; a vision model for description and OCR |
 | PDF | `binary` | `read_page`, `page_region`, `page_image`; `ocr_page` when a vision model is supplied | `documents` extra (pypdfium2); a vision model for `ocr_page` |
-| Word (`.docx`, `.odt`) | `binary` | `read_section`, `read_range`, `list_comments`, `read_table` | `office` extra (python-docx, lxml) |
-| Slides (`.pptx`, `.odp`) | `binary` | `read_slide`, `list_media`; `describe_slide_image` when a vision model is supplied | `office` extra (python-pptx, lxml); a vision model for `describe_slide_image` |
-| Spreadsheets (`.xlsx`, `.ods`) | `binary` | `read_sheet`, `read_cells`, `list_sheets` | `office` extra (openpyxl, lxml) |
+| Word (`.docx`, `.odt`) | `binary` | `read_section`, `read_range`, `list_comments`, `read_table`; `page_image` when a converter is available | `office` extra (python-docx, lxml); a `soffice` binary for `page_image` |
+| Slides (`.pptx`, `.odp`) | `binary` | `read_slide`, `list_media`; `describe_slide_image` when a vision model is supplied; `page_image` when a converter is available; `describe_slide` when both are | `office` extra (python-pptx, lxml); a vision model, a `soffice` binary, or both |
+| Spreadsheets (`.xlsx`, `.ods`) | `binary` | `read_sheet`, `read_cells`, `list_sheets`; `page_image` of the print layout when a converter is available | `office` extra (openpyxl, lxml); a `soffice` binary for `page_image` |
+| Legacy office (`.doc`, `.ppt`, `.xls`) | `binary` | `read_page`, `page_image` — only when a converter is available, otherwise the hex dump | a `soffice` binary and the `documents` extra (pypdfium2) |
 | Audio | `audio` | `read_span`, when a transcriber is supplied | `transcription` extra (faster-whisper) and an `ffmpeg` binary |
 | Video | `video` | `frame_at`; `describe_frame` when a vision model is supplied | an `ffmpeg` binary; a vision model for `describe_frame` |
 | Archives (zip, tar, tar.gz, tar.bz2, tar.xz) | `binary` | `list_entries`; members are addressed directly, see below | nothing extra |
@@ -142,9 +143,72 @@ is what an auditor needs. When a workbook was saved by a tool that stores no
 cached values, the formula text is shown in their place and a `Degradation`
 says so — a sheet full of arithmetic is never reported as empty.
 
-Legacy `.doc`, `.ppt` and `.xls` are out of scope. They are OLE2 compound
-files, a different container format entirely, and their pure-Python support is
-poor; they fall through to the hex dump.
+Legacy `.doc`, `.ppt` and `.xls` are read only when a converter is available.
+They are OLE2 compound files, a different container format entirely, and their
+pure-Python support is poor — so rather than read them badly, the library reads
+them through LibreOffice or not at all. With no `soffice` on the machine they
+fall through to the hex dump exactly as they always did.
+
+The three are handled as **one family**, not three, and that is a limitation
+worth knowing about rather than a design choice. All three share the OLE2
+compound-file header, so content detection reports `application/msword` for a
+real `.doc`, `.ppt` and `.xls` alike; telling them apart needs a full OLE2
+directory walk, which this library does not do. It costs nothing in practice,
+because the converter detects the real format itself and a `.ppt` still opens
+in Impress. What it costs is the right to *say* which application made the
+file, so the card does not: it reports the page count it observed from the
+conversion. A caller with a better detector can supply one, and the handler
+already claims all three mimetypes.
+
+## Faithful rendering
+
+Reading a deck structurally answers most questions and cannot answer one kind
+at all: *which quarter's bar is taller?*, *is the disclaimer inside the box or
+below it?* A slide is a visual artifact, and its meaning is often in
+arrangement and imagery that no text extraction recovers.
+
+With a `soffice` binary on the machine, `page_image` appears on the slide, Word
+and spreadsheet handlers, and the page it returns goes to the same vision path
+that already reads PDFs and photographs:
+
+```python
+perception = await build_perception("./corpus")   # nothing else to configure
+png = await perception.invoke("deck.pptx", "page_image", {"page": 4, "dpi": 150})
+```
+
+With a vision model configured as well, a deck gains `describe_slide`, which
+does both halves in one call:
+
+```python
+answer = await perception.invoke(
+    "deck.pptx", "describe_slide", {"page": 4, "question": "Which quarter's bar is taller?"}
+)
+answer.locator     # PageRef(page=4) — the answer cites the slide
+```
+
+That is a different question from `describe_slide_image`, and both exist:
+`describe_slide_image` asks about a picture the author embedded, and
+`describe_slide` asks about the slide as the audience saw it.
+
+The document is converted to PDF **once**, cached in the artifact store under
+its content hash, and every page after the first is rendered from that — so a
+four-hundred-slide deck pays the conversion once per machine rather than once
+per slide. Conversion runs with macro execution disabled, in a private
+LibreOffice profile, under a bounded timeout that kills the process; a document
+from an untrusted directory is the reason all three of those are not optional.
+
+**A rendering is not the document.** Fonts substitute when the original's are
+not installed, and layout engines differ. The library says so rather than
+glossing it: every rendered page carries a `Degradation` naming the converter,
+and so does the text of a converted legacy file, where wording is the
+original's but ordering is the importer's.
+
+Rendering is negotiated, not required. With no `soffice` the affordance does
+not appear at all — there is no tool that exists and returns an apology.
+`build_perception(..., renderer=NullRenderer())` turns it off even on a machine
+that has LibreOffice, which is how a test gets determinism without uninstalling
+software, and `renderer=` accepts any `DocumentRenderer` if you would rather
+convert some other way.
 
 ## Descending into containers
 

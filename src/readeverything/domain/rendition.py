@@ -43,12 +43,38 @@ type RenditionContent = TextContent | ImageContent | StructuredContent
 
 
 @dataclass(frozen=True, slots=True)
+class Degradation:
+    """Something a handler chose not to produce, or could not produce faithfully.
+
+    Reported rather than silent. Silent truncation is invisible in exactly the
+    case where the answer is wrong.
+    """
+
+    what: str
+    detail: str
+
+
+@dataclass(frozen=True, slots=True)
 class Rendition:
     """One affordance's answer, always located."""
 
     locator: Locator
     content: RenditionContent
     degraded: bool = False
+    #: What is true about this answer that the content itself does not say.
+    #:
+    #: Distinct from `degraded`, and the distinction is the point. `degraded`
+    #: is "do not trust this as the thing you asked for". A page image produced
+    #: by converting a PowerPoint through LibreOffice is not that: it is a
+    #: perfectly usable image, and it is also a *rendering* rather than the
+    #: document itself — fonts substitute, layout engines differ. Setting
+    #: `degraded` for it would tell an agent to discount a good answer;
+    #: saying nothing would let a rendering pass as the original. This is
+    #: where that third thing goes.
+    #:
+    #: Empty by default, because every producer that predates this field
+    #: reported nothing and meant it.
+    degradations: tuple[Degradation, ...] = ()
 
 
 class CueSource(Enum):
@@ -80,18 +106,6 @@ class TranscriptCue:
     #: CAPTIONED would mislabel every existing cue, which is the failure this
     #: field exists to prevent.
     source: CueSource = CueSource.SAID
-
-
-@dataclass(frozen=True, slots=True)
-class Degradation:
-    """Something a handler chose not to produce, and why.
-
-    Reported rather than silent. Silent truncation is invisible in exactly the
-    case where the answer is wrong.
-    """
-
-    what: str
-    detail: str
 
 
 @dataclass(frozen=True, slots=True)

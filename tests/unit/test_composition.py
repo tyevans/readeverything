@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from readeverything.adapters.ooxml import SLIDES_MIME
 from readeverything.adapters.semaphore_limiter import DEFAULT_LIMITS, SemaphoreLimiter
 from readeverything.composition import build_perception
 from readeverything.domain.capability import Capability, CapabilitySet
@@ -124,17 +125,27 @@ async def test_no_vision_model_means_those_affordances_are_not_offered(tmp_path:
 async def test_probing_an_unused_capability_does_not_change_the_fingerprint(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """`VideoHandler` is the first bundled handler to consume FFMPEG, but no
-    bundled handler consumes EXIFTOOL/LIBREOFFICE/TESSERACT, so a `BinaryProbe`
-    finding one of those must not invalidate the artifact cache — the
-    fingerprint of a deployment must not depend on a capability nothing uses.
+    """`VideoHandler` consumes FFMPEG and the office handlers consume
+    DOCUMENT_RENDER, but no bundled handler consumes EXIFTOOL/LIBREOFFICE/
+    TESSERACT, so a `BinaryProbe` finding one of those must not invalidate the
+    artifact cache — the fingerprint of a deployment must not depend on a
+    capability nothing uses.
+
+    LIBREOFFICE stays on that list even though rendering landed. It is the
+    "that particular binary answered a version probe" capability; DOCUMENT_RENDER,
+    which is what a renderer negotiates on, is a different member probed through
+    a different executable.
     """
     baseline = await build_perception(tmp_path, probe_binaries=False)
     baseline_fingerprint = baseline.registry.capabilities.fingerprint()
 
     class _FakeProbeThatFindsUnusedBinaries:
         async def revision(self, capability: Capability) -> str | None:
-            if capability in (Capability.FFMPEG, Capability.VISION):
+            if capability in (
+                Capability.FFMPEG,
+                Capability.VISION,
+                Capability.DOCUMENT_RENDER,
+            ):
                 return None
             return "some-version-string"
 
@@ -379,3 +390,113 @@ async def test_a_caption_extractor_is_wired_without_being_asked_for(tmp_path: Pa
     handlers = [h for h in perception.registry.handlers if isinstance(h, VideoHandler)]
     assert handlers, "no video handler was registered"
     assert handlers[0]._captions is not None
+
+
+# --- rendering ------------------------------------------------------------
+
+
+class _Renderer:
+    """A caller's own converter, which is the point of the port existing."""
+
+    revision = "my-converter/7"
+
+    def claims(self, mime: MimeType) -> bool:
+        return True
+
+    async def page_count(self, path: str) -> int:
+        return 1
+
+    async def page_text(self, path: str, page: int) -> str:
+        return "converted text"
+
+    async def render_page(self, path: str, page: int, *, dpi: int = 150) -> bytes:
+        return b"\x89PNG"
+
+
+def _deck(tmp_path: Path) -> Path:
+    from tests.fixtures_office import pptx_bytes
+
+    path = tmp_path / "deck.pptx"
+    path.write_bytes(pptx_bytes())
+    return path
+
+
+async def _deck_affordances(tmp_path: Path, **kwargs: object) -> set[str]:
+    _deck(tmp_path)
+    perception = await build_perception(tmp_path, **kwargs)  # type: ignore[arg-type]
+    return {a.name for a in (await perception.inspect("deck.pptx")).affordances}
+
+
+async def test_an_injected_renderer_publishes_rendering_without_probing(
+    tmp_path: Path,
+) -> None:
+    """A caller pointing at their own converter must not need LibreOffice
+    installed for the library to believe them."""
+    names = await _deck_affordances(tmp_path, renderer=_Renderer(), probe_binaries=False)
+    assert "page_image" in names
+
+
+async def test_an_injected_renderer_declares_its_own_revision(tmp_path: Path) -> None:
+    """It enters the capability fingerprint and therefore the artifact cache
+    key. Two different converters must not share cached descriptions."""
+    _deck(tmp_path)
+    perception = await build_perception(tmp_path, renderer=_Renderer(), probe_binaries=False)
+    assert (
+        perception.registry.capabilities.revisions[Capability.DOCUMENT_RENDER] == "my-converter/7"
+    )
+
+
+async def test_a_null_renderer_turns_rendering_off_on_a_machine_that_has_soffice(
+    tmp_path: Path,
+) -> None:
+    """Determinism in CI without uninstalling software.
+
+    `probe_binaries=True` deliberately: this must hold on the machine that
+    developed the feature, which has LibreOffice.
+    """
+    from readeverything.adapters.null_renderer import NullRenderer
+
+    names = await _deck_affordances(tmp_path, renderer=NullRenderer(), probe_binaries=True)
+    assert "page_image" not in names
+    assert "read_slide" in names, "everything else still works"
+
+
+async def test_a_null_renderer_does_not_declare_the_capability(tmp_path: Path) -> None:
+    from readeverything.adapters.null_renderer import NullRenderer
+
+    perception = await build_perception(tmp_path, renderer=NullRenderer(), probe_binaries=True)
+    assert Capability.DOCUMENT_RENDER not in perception.registry.capabilities.revisions
+
+
+async def test_a_null_renderer_leaves_legacy_files_on_the_hex_dump(tmp_path: Path) -> None:
+    from readeverything.adapters.null_renderer import NullRenderer
+    from readeverything.handlers.binary import BinaryHandler
+
+    perception = await build_perception(tmp_path, renderer=NullRenderer(), probe_binaries=True)
+    handler = perception.registry.resolve(MimeType.parse("application/msword"))
+    assert isinstance(handler, BinaryHandler)
+
+
+async def test_without_the_capability_no_rendering_affordance_appears(tmp_path: Path) -> None:
+    """The design's first promise, at the composition root: everything works as
+    it did and no rendering affordance appears anywhere."""
+    names = await _deck_affordances(tmp_path, probe_binaries=False)
+    assert "page_image" not in names
+    assert {"read_slide", "list_media"} <= names
+
+
+async def test_the_renderer_and_the_perception_share_one_artifact_store(
+    tmp_path: Path,
+) -> None:
+    """A converted PDF is an artifact like any other. Two stores would mean a
+    caller who configured a persistent cache still paid for every conversion on
+    every process start."""
+    from readeverything.adapters.artifact_store import InMemoryArtifactStore
+    from readeverything.adapters.soffice_renderer import SofficeRenderer
+
+    store = InMemoryArtifactStore()
+    perception = await build_perception(tmp_path, artifacts=store, probe_binaries=False)
+    handler = perception.registry.resolve(MimeType.parse(SLIDES_MIME))
+    renderer = handler._renderer  # type: ignore[attr-defined]
+    assert isinstance(renderer, SofficeRenderer)
+    assert renderer._artifacts is store

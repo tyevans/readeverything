@@ -74,3 +74,16 @@ class ContainerLimitExceededError(SourceUnreadableError):
 
 class ProbeFailedError(InfrastructureError):
     """An external probe or tool failed."""
+
+
+class RenditionFailedError(InfrastructureError):
+    """A document could not be converted into pages.
+
+    An infrastructure error rather than a domain one: the request made sense —
+    render page 4 of this deck — and it was the converter that did not deliver.
+    A caller already handling `InfrastructureError` handles a conversion that
+    timed out without knowing this class exists.
+
+    Handlers catch this and degrade; it is raised by the renderer adapter, and
+    is the reason `DocumentRenderer.render_page` never returns empty bytes.
+    """

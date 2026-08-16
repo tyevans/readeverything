@@ -137,7 +137,12 @@ def _render_rendition(rendition: Rendition, affordances: tuple[str, ...] = ()) -
         case _:
             body = f"[unrenderable content: {type(rendition.content).__name__}]"
     marker = " (degraded)" if rendition.degraded else ""
-    return f"located at {rendition.locator!r}{marker}:\n{body}"
+    # Provenance goes AFTER the content, not before it: "fonts may have been
+    # substituted" is context for an answer, and putting it first would read as
+    # a warning about whether to read on. Nothing is emitted when there is
+    # nothing to report, which is the overwhelmingly common case.
+    notes = "".join(f"\nnote: {d.what} — {d.detail}" for d in rendition.degradations)
+    return f"located at {rendition.locator!r}{marker}:\n{body}{notes}"
 
 
 def build_tools(perception: Perception) -> list[BaseTool]:

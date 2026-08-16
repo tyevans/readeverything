@@ -18,7 +18,6 @@ into an adapter.
 from __future__ import annotations
 
 import importlib.util
-import io
 import time
 from enum import Enum
 from typing import TYPE_CHECKING, ClassVar
@@ -41,6 +40,7 @@ except ImportError as exc:  # pragma: no cover - exercised via a patched sys.mod
     ) from exc
 from pydantic import BaseModel, Field
 
+from readeverything.adapters.pdfium_render import encode_png, render_pil, render_png
 from readeverything.domain.affordance import Affordance, DetailLevel
 from readeverything.domain.capability import Capability
 from readeverything.domain.card import Card, Segment
@@ -399,6 +399,11 @@ class PdfHandler:
     def _render_pil(self, page: pdfium.PdfPage, dpi: int) -> Image.Image:
         """The page rendered as a PIL image, not yet encoded to bytes.
 
+        The driving itself now lives in `adapters/pdfium_render.py`, because
+        `adapters/soffice_renderer.py` renders converted documents through the
+        identical code and an adapter cannot import a handler. This method
+        stays as the handler's own name for it.
+
         `Image.Image` is a type-checking-only name here (see the
         `TYPE_CHECKING` import above, mirroring `regions.py`): this module
         must stay importable with Pillow absent (`_PIL_AVAILABLE` is the
@@ -408,17 +413,10 @@ class PdfHandler:
         `handlers/regions.py` at runtime; this module must not become a third
         home.
         """
-        bitmap = page.render(scale=dpi / 72)
-        try:
-            return bitmap.to_pil()  # type: ignore[no-any-return]  # pypdfium2 ships no py.typed
-        finally:
-            bitmap.close()
+        return render_pil(page, dpi)
 
     def _render_png(self, page: pdfium.PdfPage, dpi: int) -> bytes:
-        pil_image = self._render_pil(page, dpi)
-        buffer = io.BytesIO()
-        pil_image.save(buffer, format="PNG")
-        return buffer.getvalue()
+        return render_png(page, dpi)
 
     async def _page_image(self, ref: SourceRef, number: int, dpi: int) -> Rendition:
         data = await self._source.read_bytes(ref.uri)
@@ -498,12 +496,7 @@ class PdfHandler:
             pil_image = self._render_pil(document[params.page - 1], params.dpi)
         finally:
             document.close()
-        if params.is_whole_frame:
-            buffer = io.BytesIO()
-            pil_image.save(buffer, format="PNG")
-            png = buffer.getvalue()
-        else:
-            png = crop_to_region(pil_image, params)
+        png = encode_png(pil_image) if params.is_whole_frame else crop_to_region(pil_image, params)
         try:
             text = await self._vision.describe(png, "image/png", params.question)
         except Exception:

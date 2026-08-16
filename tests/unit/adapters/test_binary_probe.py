@@ -92,3 +92,17 @@ async def test_a_real_version_line_is_accepted(tmp_path: Path) -> None:
     probe = BinaryProbe(executables={Capability.FFMPEG: (str(script), "-version")})
     revision = await probe.revision(Capability.FFMPEG)
     assert revision is not None and "6.1.1" in revision
+
+
+def test_document_render_is_probed_via_soffice_not_libreoffice() -> None:
+    """`soffice` and not `libreoffice`, and `--version` and not `-version`.
+
+    The two names are usually the same install, but they answer differently.
+    `libreoffice -version` prints a deprecation warning where a version should
+    be — the trap `_as_revision` exists for — while `soffice --version` prints
+    "LibreOffice 25.8.7.3 580(Build:3)" and exits 0. Measured on 25.8.7.3, not
+    assumed. `soffice` is also the name the renderer adapter actually spawns,
+    so probing a different executable than the one that will be run would let
+    the capability be reported present by a binary nothing uses.
+    """
+    assert DEFAULT_EXECUTABLES[Capability.DOCUMENT_RENDER] == ("soffice", "--version")
