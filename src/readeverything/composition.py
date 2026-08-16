@@ -108,6 +108,44 @@ def _optional_pdf_handler(
     ]
 
 
+def _optional_office_handlers(
+    source: SourceReader, vision: VisionModel | None, observer: Observer | None
+) -> list[MediaHandler]:
+    """The three office handlers, each present only if its own reader imports.
+
+    Guarded exactly like `_optional_image_handler` and `_optional_pdf_handler`,
+    but with THREE separate guards rather than one. The `office` extra installs
+    python-docx, python-pptx and openpyxl together, yet an environment holding
+    only some of them should still read the families it can — a single
+    try/except around all three would make one missing package silently cost
+    the other two.
+
+    Only the slides handler takes `vision`: a picture embedded in a deck is the
+    one thing in these three formats a model has to look at. Word and
+    spreadsheet content is text all the way down.
+    """
+    handlers: list[MediaHandler] = []
+    try:
+        from readeverything.handlers.office_word import OfficeWordHandler
+    except ImportError:
+        pass
+    else:
+        handlers.append(OfficeWordHandler(source=source, observer=observer))
+    try:
+        from readeverything.handlers.office_slides import OfficeSlidesHandler
+    except ImportError:
+        pass
+    else:
+        handlers.append(OfficeSlidesHandler(source=source, vision=vision, observer=observer))
+    try:
+        from readeverything.handlers.office_sheets import OfficeSheetsHandler
+    except ImportError:
+        pass
+    else:
+        handlers.append(OfficeSheetsHandler(source=source, observer=observer))
+    return handlers
+
+
 def _video_handler(
     source: SourceReader,
     vision: VisionModel | None,
@@ -251,6 +289,7 @@ async def build_perception(
         TextHandler(source=source, observer=observer),
         *_optional_image_handler(source, vision, observer),
         *_optional_pdf_handler(source, vision, observer),
+        *_optional_office_handlers(source, vision, observer),
         *_video_handler(source, vision, transcriber, captions, watcher, observer, limiter),
         *_audio_handler(source, transcriber, observer),
         # The fallback claims "*", so it must be last: the registry breaks a

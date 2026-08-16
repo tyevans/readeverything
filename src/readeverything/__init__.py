@@ -81,6 +81,7 @@ if TYPE_CHECKING:
     from readeverything.domain.locator_map import LocatorSegment as LocatorSegment
     from readeverything.domain.locators import BBox as BBox
     from readeverything.domain.locators import ByteRange as ByteRange
+    from readeverything.domain.locators import CellRange as CellRange
     from readeverything.domain.locators import CharSpan as CharSpan
     from readeverything.domain.locators import PageRef as PageRef
     from readeverything.domain.locators import TimeSpan as TimeSpan
@@ -101,6 +102,13 @@ if TYPE_CHECKING:
     from readeverything.handlers.audio import AudioHandler as AudioHandler
     from readeverything.handlers.binary import BinaryHandler as BinaryHandler
     from readeverything.handlers.image import ImageHandler as ImageHandler
+    from readeverything.handlers.office_sheets import (
+        OfficeSheetsHandler as OfficeSheetsHandler,
+    )
+    from readeverything.handlers.office_slides import (
+        OfficeSlidesHandler as OfficeSlidesHandler,
+    )
+    from readeverything.handlers.office_word import OfficeWordHandler as OfficeWordHandler
     from readeverything.handlers.pdf import PdfHandler as PdfHandler
     from readeverything.handlers.text import TextHandler as TextHandler
     from readeverything.handlers.video import VideoHandler as VideoHandler
@@ -152,6 +160,7 @@ _LAZY: dict[str, str] = {
     "BinaryProbe": "readeverything.adapters.binary_probe",
     "Budget": "readeverything.domain.rendition",
     "ByteRange": "readeverything.domain.locators",
+    "CellRange": "readeverything.domain.locators",
     "Capability": "readeverything.domain.capability",
     "CapabilityProbe": "readeverything.ports.probe",
     "CapabilitySet": "readeverything.domain.capability",
@@ -207,6 +216,9 @@ _LAZY: dict[str, str] = {
     "OperationFinished": "readeverything.domain.observation",
     "OperationProgressed": "readeverything.domain.observation",
     "OperationStarted": "readeverything.domain.observation",
+    "OfficeSheetsHandler": "readeverything.handlers.office_sheets",
+    "OfficeSlidesHandler": "readeverything.handlers.office_slides",
+    "OfficeWordHandler": "readeverything.handlers.office_word",
     "PageRef": "readeverything.domain.locators",
     "PdfHandler": "readeverything.handlers.pdf",
     "PdfiumProbe": "readeverything.adapters.pdfium_probe",
