@@ -49,6 +49,7 @@ CONFINED: dict[str, set[str]] = {
     # have a Word parser loaded, and one module would make that impossible.
     "docx": {"handlers/office_word.py"},
     "pptx": {"handlers/office_slides.py"},
+    "openpyxl": {"handlers/office_sheets.py"},
     # ODF has no maintained reader — odfpy is unmaintained — so `adapters/odf.py`
     # walks the flat XML parts itself. lxml is that walk and nothing else in the
     # library touches it.
