@@ -34,15 +34,31 @@ CONFINED: dict[str, set[str]] = {
     # `_ask_about_frame`'s region-cropping branch: `frame_at` hands back raw
     # PNG bytes rather than a decoded image, so cropping needs an actual
     # decode, guarded by the same `_PIL_AVAILABLE` name check.
-    "PIL": {"handlers/image.py", "handlers/regions.py", "handlers/pdf.py", "handlers/video.py"},
+    # `adapters/pdfium_render.py`'s import is TYPE_CHECKING-only for the same
+    # reason pdf.py's is: it annotates the PIL image `pdfium`'s own `to_pil()`
+    # hands back, and `PIL_AVAILABLE` (checked by name) is the real guard.
+    "PIL": {
+        "handlers/image.py",
+        "handlers/regions.py",
+        "handlers/pdf.py",
+        "handlers/video.py",
+        "adapters/pdfium_render.py",
+    },
     "faster_whisper": {"adapters/whisper_transcriber.py"},
     # The remote transcriber is the only place that speaks HTTP directly:
     # every other network-touching adapter goes through langchain's client.
     "httpx": {"adapters/remote_whisper_transcriber.py"},
     # pypdfium2 wraps Google's PDFium. Two homes: the probe adapter answers
     # cheap document facts, and the PDF handler extracts text — which is not a
-    # probe's job, and no handler imports an adapter.
-    "pypdfium2": {"adapters/pdfium_probe.py", "handlers/pdf.py"},
+    # probe's job. The third is the rendering adapter, which exists because
+    # `adapters/soffice_renderer.py` renders converted documents through the
+    # same code and an adapter may not import a handler; pdf.py delegates to
+    # it rather than keeping a second copy.
+    "pypdfium2": {
+        "adapters/pdfium_probe.py",
+        "handlers/pdf.py",
+        "adapters/pdfium_render.py",
+    },
     # The three OOXML readers, each confined to the one handler that speaks its
     # document model. There is deliberately no shared "office" module importing
     # all three: a caller who installed the extra for spreadsheets should not
