@@ -20,12 +20,12 @@ def test_splits_on_the_separator() -> None:
     )
 
 
-def test_a_doubled_separator_is_a_literal_one() -> None:
-    assert split_uri("a.zip!od!!d.txt") == ("a.zip", "od!d.txt")
+def test_an_escaped_separator_is_a_literal_one() -> None:
+    assert split_uri("a.zip!od\\!d.txt") == ("a.zip", "od!d.txt")
 
 
 def test_join_escapes_a_literal_separator() -> None:
-    assert join_uri(("a.zip", "od!d.txt")) == "a.zip!od!!d.txt"
+    assert join_uri(("a.zip", "od!d.txt")) == "a.zip!od\\!d.txt"
 
 
 def test_join_of_one_segment_is_that_segment() -> None:
@@ -41,7 +41,7 @@ def test_container_of_a_member_is_everything_to_its_left() -> None:
 
 
 def test_container_of_preserves_the_escape() -> None:
-    assert container_of("a.zip!od!!d.txt") == "a.zip"
+    assert container_of("a.zip!od\\!d.txt") == "a.zip"
 
 
 def test_an_empty_segment_is_refused() -> None:
@@ -62,6 +62,28 @@ def test_joining_nothing_is_refused() -> None:
 def test_joining_an_empty_segment_is_refused() -> None:
     with pytest.raises(ValueError, match="empty segment"):
         join_uri(("a.zip", ""))
+
+
+def test_a_separator_beside_an_escaped_one_is_not_ambiguous() -> None:
+    """The bug that doubling could never solve.
+
+    Under a doubling escape, `("0", "!0")` and `("0!", "0")` both encode to
+    `"0!!!0"`, so one of the two can never be read back. An escape character
+    distinct from the separator is the only fix; this is the smallest pair of
+    inputs that proves doubling was not one.
+    """
+    assert split_uri(join_uri(("0", "!0"))) == ("0", "!0")
+    assert split_uri(join_uri(("0!", "0"))) == ("0!", "0")
+
+
+def test_a_segment_that_is_only_a_separator_survives() -> None:
+    """Doubling encoded this as `"0!!!!"`, which read back as an empty segment."""
+    assert split_uri(join_uri(("0", "!"))) == ("0", "!")
+
+
+def test_the_escape_character_itself_is_escaped() -> None:
+    """Otherwise a member literally named `od\\!d.txt` would decode as `od!d.txt`."""
+    assert split_uri(join_uri(("a.zip", "od\\!d.txt"))) == ("a.zip", "od\\!d.txt")
 
 
 @given(st.lists(st.text(min_size=1), min_size=1, max_size=4))

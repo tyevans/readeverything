@@ -173,10 +173,15 @@ async def test_a_windows_drive_member_is_refused(tmp_path: Path) -> None:
 
 
 async def test_a_backslash_traversal_is_refused(tmp_path: Path) -> None:
-    """A zip written on Windows separates with `\\`, and `..` still means `..`."""
+    """A zip written on Windows separates with `\\`, and `..` still means `..`.
+
+    A backslash is the uri escape character, so a member name containing one
+    arrives doubled -- which is what `join_uri` produces and what an attacker
+    would have to spell to get this far.
+    """
     _zip(tmp_path, "a.zip", {"inner.txt": b"hi"})
     with pytest.raises(SourceUnreadableError, match="traversal"):
-        await _nested(tmp_path).read_bytes("a.zip!..\\..\\etc\\passwd")
+        await _nested(tmp_path).read_bytes("a.zip!..\\\\..\\\\etc\\\\passwd")
 
 
 async def test_a_member_over_the_byte_limit_is_refused(tmp_path: Path) -> None:
@@ -309,7 +314,7 @@ async def test_walk_does_not_return_directory_entries(tmp_path: Path) -> None:
 
 async def test_walk_escapes_a_literal_separator_in_a_member_name(tmp_path: Path) -> None:
     _zip(tmp_path, "a.zip", {"od!d.txt": b"x"})
-    assert "a.zip!od!!d.txt" in await _nested(tmp_path).walk(".")
+    assert "a.zip!od\\!d.txt" in await _nested(tmp_path).walk(".")
 
 
 async def test_walk_stops_at_max_depth(tmp_path: Path) -> None:

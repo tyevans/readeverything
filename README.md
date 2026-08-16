@@ -232,7 +232,9 @@ bytes through a port and cannot tell where they came from. A member hashes to
 the same value as the same file loose on disk, so a cached OCR stays warm
 across the boundary.
 
-A literal `!` in a member name is escaped `!!`. Descent is bounded by
+A literal `!` in a member name is escaped `\!`, and a literal `\` is escaped
+`\\` — so a zip written on Windows, whose member names separate with `\`,
+arrives with those doubled. Descent is bounded by
 `ContainerLimits` — depth, member size, total size, member count and, the one
 that matters, an expansion ratio checked *while* decompressing, so a zip bomb
 is refused rather than filling a disk:
