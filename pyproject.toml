@@ -1,6 +1,6 @@
 [project]
 name = "readeverything"
-version = "0.2.0"
+version = "0.3.0"
 description = "Give an agent eyes into a filesystem: mimetype-dispatched media representations with locator-carrying provenance."
 readme = "README.md"
 license = "MIT"

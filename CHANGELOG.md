@@ -7,6 +7,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-15
+
+An archive is a directory now, and an office document is a document. The two
+compose without either knowing about the other.
+
+### Added
+
+- **Container descent.** A zip, tar, `.tar.gz`, `.tar.bz2` or `.tar.xz` is
+  walked as a directory, and its members are addressed with `!` —
+  `docs.zip!nested.tar.gz!report.pdf`. A member gets a real card from whichever
+  handler claims its mimetype: an archived PDF has a page count and
+  `read_page`, an archived deck has slides. **No handler was modified to make
+  this work.** Every handler reads bytes through the `SourceReader` port and
+  cannot tell where they came from, which is a property the architecture has
+  had since 0.1.0 with nothing spending it.
+- **`ContainerLimits`**, bounding depth, member size, total size, member count,
+  and an expansion ratio checked *while* decompressing rather than against the
+  header — a zip bomb lies in its own paperwork, so only bytes actually written
+  are trustworthy. Members with `..` components, absolute paths, or symlink
+  targets are refused outright.
+- **`ArchiveOpener`**, a port with stdlib zip and tar adapters. Supply your own
+  for `.7z` or `.rar`; this library takes no dependency for either.
+- **An archive handler**, giving the container itself a card: entry count,
+  compressed and uncompressed totals, expansion ratio, and a per-entry outline.
+  `list_entries` is paged. There is deliberately no `read_entry` — a member is
+  reached by inspecting its uri, and two routes to the same bytes would mean
+  two provenance stories for one citation.
+- **Word, slides and spreadsheets** (`.docx`, `.pptx`, `.xlsx` and the ODF
+  `.odt`/`.odp`/`.ods`), in a new `office` extra. A document reports a heading
+  outline, a deck reports slides with **speaker notes included and labelled**,
+  and a workbook reports sheets and used ranges. Legacy OLE2 `.doc`/`.ppt`/
+  `.xls` remain out of scope.
+- **`CellRange`**, a locator addressing a rectangle of cells in a named sheet.
+  None of the five existing locators could address a cell: a `CharSpan` into
+  rendered text is an artifact of the handler's delimiter choice and does not
+  survive changing it.
+
+### Changed
+
+- **Office documents are detected by content, not extension.** A `.docx` is a
+  zip, so detection classifies by the container's part-name prefixes (`word/`,
+  `ppt/`, `xl/`); a deck renamed `report.bin` is still read as a deck. This is
+  also what stops descent from dissolving every office document into a folder
+  of XML parts — detection claims the file before the archive handler sees it.
+- **An unopenable document no longer reports itself as an empty one.**
+  `list_comments` said "no comments" and `list_media` said "no pictures" about
+  files they had failed to open. Both check readability first. This is the same
+  defect shape as reporting a scanned page as empty.
+- **A spreadsheet shows values and formulas both.** `represent` shows cached
+  values, because that is what the sheet means; `read_cells(..., formulas=true)`
+  shows formulas, because that is what an auditor needs. Where a workbook
+  carries no cached values, the formula text appears with a `Degradation`
+  saying so, rather than a sheet of arithmetic reading as blank.
+
+### Notes
+
+- A member hashes to the same value as the same file loose on disk, so a
+  cached artifact — an OCR, a transcript — stays warm across the container
+  boundary.
+- A solid archive (`.tar.gz` and friends) cannot seek to a member, so it is
+  decompressed once and reused for the lifetime of the perception, bounded by
+  an LRU cache rather than by failing.
+- Descent is on by default; pass `containers=None` to `build_perception` for
+  0.2.0's behavior exactly, including no extra opens during `walk`.
+- A plain zip whose first entries happen to sit under a top-level `word/`,
+  `ppt/` or `xl/` directory is misread as an office document. It then degrades
+  honestly rather than hex-dumping, so it is not a regression — but it is a
+  real if unlikely misdetection.
+
 ## [0.2.0] - 2026-08-15
 
 Asking a vision model about a picture takes one call now, and may be scoped to
@@ -93,6 +162,7 @@ on a `0.x` version, where a minor bump may still break you.
 - Video is read transcript-first: the words are cheaper and more informative
   than the frames, and frames are sampled only when asked for.
 
-[Unreleased]: https://github.com/tyevans/readeverything/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/tyevans/readeverything/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/tyevans/readeverything/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/tyevans/readeverything/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/tyevans/readeverything/releases/tag/v0.1.0
