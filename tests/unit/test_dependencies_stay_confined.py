@@ -69,6 +69,15 @@ CONFINED: dict[str, set[str]] = {
         "adapters/whisper_transcriber.py",
         # asyncio.Semaphore bounds per-capability concurrency.
         "adapters/semaphore_limiter.py",
+        # zipfile and tarfile are synchronous and blocking; `to_thread` keeps a
+        # central-directory read off the event loop, exactly as
+        # local_source.py does for `open`. No subprocess is spawned.
+        "adapters/zip_archive.py",
+        # Same, plus an `asyncio.Lock` so a solid archive is decompressed once
+        # even when two readers reach it together.
+        "adapters/tar_archive.py",
+        # Same, plus a per-uri `asyncio.Lock` around materialising a member.
+        "adapters/nested_source.py",
         # `asyncio.gather` fetches a video's sampled moments concurrently. No
         # subprocess is spawned here and no adapter is imported: the handler
         # awaits the injected extractor and vision ports, and gathering them is
