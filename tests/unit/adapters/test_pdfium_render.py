@@ -17,6 +17,7 @@ from PIL import Image
 from readeverything.adapters.pdfium_render import (
     PIL_AVAILABLE,
     page_count,
+    page_text,
     render_page_png,
 )
 from readeverything.domain.errors import InfrastructureError
@@ -67,3 +68,27 @@ def test_pil_availability_is_reported_rather_than_assumed() -> None:
     """Pillow is optional (the `images` extra). Callers check this name rather
     than catching an ImportError three frames down."""
     assert PIL_AVAILABLE is True
+
+
+# --- text -----------------------------------------------------------------
+
+
+def test_page_text_reads_one_page_of_the_text_layer() -> None:
+    """`handlers/office_legacy.py` reads a converted document this way: the
+    converter produces a PDF, and the PDF's own text layer is the text. There
+    is no second extractor and no OCR involved."""
+    data = born_digital(["alpha", "beta", "gamma"])
+    assert "beta" in page_text(data, 2)
+    assert "alpha" not in page_text(data, 2)
+
+
+def test_page_text_is_one_indexed_like_everything_else() -> None:
+    data = born_digital(["alpha", "beta"])
+    assert "alpha" in page_text(data, 1)
+    with pytest.raises(InfrastructureError):
+        page_text(data, 0)
+
+
+def test_page_text_past_the_end_raises() -> None:
+    with pytest.raises(InfrastructureError):
+        page_text(born_digital(["alpha"]), 4)

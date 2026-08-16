@@ -24,6 +24,9 @@ class _Renderer:
     async def render_page(self, path: str, page: int, *, dpi: int = 150) -> bytes:
         return b"\x89PNG"
 
+    async def page_text(self, path: str, page: int) -> str:
+        return "the fourth slide"
+
 
 def test_a_structural_implementation_satisfies_the_port() -> None:
     assert isinstance(_Renderer(), DocumentRenderer)
@@ -57,6 +60,13 @@ def test_the_null_renderer_claims_nothing() -> None:
 
 async def test_the_null_renderer_reports_no_pages() -> None:
     assert await NullRenderer().page_count("/anything") == 0
+
+
+async def test_the_null_renderer_refuses_text_too() -> None:
+    """Symmetric with the image path. Returning "" would read as "this page is
+    blank", which is a claim about a document nothing opened."""
+    with pytest.raises(RenditionFailedError):
+        await NullRenderer().page_text("/anything", 1)
 
 
 async def test_the_null_renderer_raises_rather_than_returning_a_blank_image() -> None:

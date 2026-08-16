@@ -89,6 +89,33 @@ def page_count(data: bytes) -> int:
         document.close()
 
 
+def _checked(document: pdfium.PdfDocument, page: int) -> pdfium.PdfPage:
+    if page < 1 or page > len(document):
+        raise InfrastructureError(
+            f"page {page} does not exist; the document has {len(document)} page(s)"
+        )
+    return document[page - 1]
+
+
+def page_text(data: bytes, page: int) -> str:
+    """One page's text layer.
+
+    This is how a *converted* document is read: the converter produces a PDF,
+    and the PDF's own text layer is the text. No second extractor, no OCR. It
+    is the same extraction `handlers/pdf.py` performs, at the bytes-in
+    granularity `adapters/soffice_renderer.py` needs.
+    """
+    document = _open(data)
+    try:
+        textpage = _checked(document, page).get_textpage()
+        try:
+            return str(textpage.get_text_range(index=0, count=-1))
+        finally:
+            textpage.close()
+    finally:
+        document.close()
+
+
 def render_page_png(data: bytes, page: int, *, dpi: int = 150) -> bytes:
     """One page of these PDF bytes as a PNG. `page` is 1-indexed.
 
@@ -100,10 +127,6 @@ def render_page_png(data: bytes, page: int, *, dpi: int = 150) -> bytes:
         raise InfrastructureError("cannot render a page: Pillow is not installed")
     document = _open(data)
     try:
-        if page < 1 or page > len(document):
-            raise InfrastructureError(
-                f"page {page} does not exist; the document has {len(document)} page(s)"
-            )
-        return render_png(document[page - 1], dpi)
+        return render_png(_checked(document, page), dpi)
     finally:
         document.close()

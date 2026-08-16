@@ -16,6 +16,8 @@ from __future__ import annotations
 from readeverything.domain.errors import RenditionFailedError
 from readeverything.domain.identity import MimeType
 
+_DISABLED = "rendering is disabled: this composition was given a NullRenderer"
+
 
 class NullRenderer:
     """Claims nothing, renders nothing, and says so."""
@@ -32,6 +34,7 @@ class NullRenderer:
         return 0
 
     async def render_page(self, path: str, page: int, *, dpi: int = 150) -> bytes:
-        raise RenditionFailedError(
-            "rendering is disabled: this composition was given a NullRenderer"
-        )
+        raise RenditionFailedError(_DISABLED)
+
+    async def page_text(self, path: str, page: int) -> str:
+        raise RenditionFailedError(_DISABLED)

@@ -66,7 +66,7 @@ from readeverything.adapters.ooxml import (
     SLIDES_MIME,
     WORD_MIME,
 )
-from readeverything.adapters.pdfium_render import page_count, render_page_png
+from readeverything.adapters.pdfium_render import page_count, page_text, render_page_png
 from readeverything.domain.capability import Capability
 from readeverything.domain.errors import InfrastructureError, RenditionFailedError
 from readeverything.domain.identity import MimeType
@@ -217,6 +217,20 @@ class SofficeRenderer:
             # `RenditionFailedError` is what this port promises; a bad page
             # number arriving as a bare `InfrastructureError` would be a
             # failure a caller cannot distinguish from a converter crash.
+            raise RenditionFailedError(str(exc)) from exc
+
+    async def page_text(self, path: str, page: int) -> str:
+        """The converted PDF's own text layer for that page.
+
+        Free, in the sense that matters: the conversion has already happened
+        and is cached, so reading the words costs no second subprocess. This is
+        what gives a legacy `.doc` readable text rather than only a picture of
+        one.
+        """
+        data = await self._pdf(path)
+        try:
+            return await asyncio.to_thread(page_text, data, page)
+        except InfrastructureError as exc:
             raise RenditionFailedError(str(exc)) from exc
 
     # -- conversion ------------------------------------------------------

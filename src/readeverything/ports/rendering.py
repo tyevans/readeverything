@@ -58,3 +58,19 @@ class DocumentRenderer(Protocol):
         as "page 4" is an observation nothing made.
         """
         ...
+
+    async def page_text(self, path: str, page: int) -> str:
+        """The text of `page`, as the conversion laid it out.
+
+        Not in the design's sketch of this port, and it has to be: a renderer
+        is the ONLY thing that can read a legacy `.doc`/`.ppt`/`.xls` at all —
+        pure-Python OLE2 support is poor, which is why Spec 9 declined the
+        family — so `OfficeLegacyHandler.represent` has no other source of
+        words. A port that could only produce images would have made that
+        handler an image-only reader, and a document you can only look at is a
+        strictly worse answer than one you can read.
+
+        A converter that genuinely cannot produce text returns "" per page
+        rather than raising; the handler reports that as a degradation.
+        """
+        ...

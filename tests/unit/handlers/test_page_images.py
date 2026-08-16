@@ -37,6 +37,9 @@ class _Renderer:
     async def page_count(self, path: str) -> int:
         return 2
 
+    async def page_text(self, path: str, page: int) -> str:
+        return f"page {page}"
+
     async def render_page(self, path: str, page: int, *, dpi: int = 150) -> bytes:
         self.calls.append((path, page, dpi))
         if self._fails:
