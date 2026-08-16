@@ -143,4 +143,38 @@ class CellRange:
             raise ValueError(f"cols must be at least 1, got {self.cols}")
 
 
-type Locator = TimeSpan | PageRef | BBox | CharSpan | ByteRange | CellRange
+@dataclass(frozen=True, slots=True)
+class PartSpan:
+    """A character range inside one named part of a multi-part document.
+
+    An EPUB is the case that needed this. Its text lives in a dozen separate
+    XHTML files inside a zip, and none of the older locators can say where a
+    sentence came from. `CharSpan` names offsets with no file, which in a book
+    of twelve chapters is twelve possible answers. `ByteRange` into the epub
+    itself addresses compressed bytes -- checkable only by a reader who
+    reimplements DEFLATE, which is the opposite of what a citation is for.
+
+    `part` is the member's name exactly as the container spells it, because
+    that is the string that resolves it: `"OEBPS/ch3.xhtml"` unzips, and a
+    prettified `"Chapter 3"` does not. `start` and `end` index that part's own
+    decoded text, so a reader extracts one file and slices it.
+    """
+
+    part: str
+    start: int
+    end: int
+
+    def __post_init__(self) -> None:
+        if not self.part.strip():
+            raise ValueError("part must not be blank")
+        if self.start < 0:
+            raise ValueError(f"start must not be negative, got {self.start}")
+        if self.start >= self.end:
+            raise ValueError(f"start must be less than end, got {self.start} >= {self.end}")
+
+    @property
+    def length(self) -> int:
+        return self.end - self.start
+
+
+type Locator = TimeSpan | PageRef | BBox | CharSpan | ByteRange | CellRange | PartSpan

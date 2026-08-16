@@ -119,6 +119,7 @@ service.
 |---|---|---|---|
 | Text, JSON, XML | `text` | `read_range` | nothing extra |
 | HTML (`.html`, `.xhtml`) | `text` | `read_section`, `read_range` | nothing extra |
+| EPUB (`.epub`) | `binary` | `read_chapter`, `read_range` | nothing extra |
 | Images | `image` | `crop_region` always; `describe_image` and `ocr` when a vision model is supplied | `images` extra (Pillow) for image handling; a vision model for description and OCR |
 | PDF | `binary` | `read_page`, `page_region`, `page_image`; `ocr_page` when a vision model is supplied | `documents` extra (pypdfium2); a vision model for `ocr_page` |
 | Word (`.docx`, `.odt`) | `binary` | `read_section`, `read_range`, `list_comments`, `read_table`; `page_image` when a converter is available | `office` extra (python-docx, lxml); a `soffice` binary for `page_image` |
@@ -247,7 +248,9 @@ await build_perception("./corpus", containers=None)  # no descent at all
 ```
 
 A `.docx`, `.epub` or `.jar` is a zip too, and is deliberately *not* treated as
-a folder: descending would bury the document under a dozen XML parts. `.7z` and
+a folder: descending would bury the document under a dozen XML parts. An EPUB
+is read as a book instead — chapters in the spine's order, each citation naming
+the part it came from, so `book.epub` reads as a novel rather than a manifest. `.7z` and
 `.rar` are not supported, because each needs a dependency this library does not
 take — supply your own `ArchiveOpener` via `archives=`.
 

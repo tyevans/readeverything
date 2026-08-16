@@ -9,6 +9,7 @@ from readeverything.domain.locators import (
     CharSpan,
     Locator,
     PageRef,
+    PartSpan,
     TimeSpan,
 )
 
@@ -89,3 +90,26 @@ def test_cell_range_is_in_the_locator_union() -> None:
     without mypy --strict rejecting it at every call site.
     """
     assert CellRange in get_args(Locator.__value__)
+
+
+def test_a_part_span_rejects_an_empty_range() -> None:
+    with pytest.raises(ValueError, match="start must be less than end"):
+        PartSpan(part="OEBPS/ch1.xhtml", start=5, end=5)
+
+
+def test_a_part_span_rejects_a_blank_part_name() -> None:
+    """The part name is what makes the offsets resolvable. A span with no part
+    names a place inside a zip, and a zip has no character offsets.
+    """
+    with pytest.raises(ValueError, match="part"):
+        PartSpan(part="  ", start=0, end=1)
+
+
+def test_a_part_span_is_hashable_and_compares_by_value() -> None:
+    here = PartSpan(part="a.xhtml", start=0, end=4)
+    assert here == PartSpan(part="a.xhtml", start=0, end=4)
+    assert len({here, PartSpan(part="a.xhtml", start=0, end=4)}) == 1
+
+
+def test_part_span_is_in_the_locator_union() -> None:
+    assert PartSpan in get_args(Locator.__value__)

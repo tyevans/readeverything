@@ -93,6 +93,7 @@ if TYPE_CHECKING:
     from readeverything.domain.locators import CellRange as CellRange
     from readeverything.domain.locators import CharSpan as CharSpan
     from readeverything.domain.locators import PageRef as PageRef
+    from readeverything.domain.locators import PartSpan as PartSpan
     from readeverything.domain.locators import TimeSpan as TimeSpan
     from readeverything.domain.observation import Event as Event
     from readeverything.domain.observation import OperationFinished as OperationFinished
@@ -111,6 +112,7 @@ if TYPE_CHECKING:
     from readeverything.handlers.archive import ArchiveHandler as ArchiveHandler
     from readeverything.handlers.audio import AudioHandler as AudioHandler
     from readeverything.handlers.binary import BinaryHandler as BinaryHandler
+    from readeverything.handlers.epub import EpubHandler as EpubHandler
     from readeverything.handlers.html import HtmlHandler as HtmlHandler
     from readeverything.handlers.image import ImageHandler as ImageHandler
     from readeverything.handlers.office_sheets import (
@@ -221,6 +223,7 @@ _LAZY: dict[str, str] = {
     "FileSource": "readeverything.ports.source",
     "FilesystemArtifactStore": "readeverything.adapters.artifact_store",
     "ImageContent": "readeverything.domain.rendition",
+    "EpubHandler": "readeverything.handlers.epub",
     "HtmlHandler": "readeverything.handlers.html",
     "ImageHandler": "readeverything.handlers.image",
     "InMemoryArtifactStore": "readeverything.adapters.artifact_store",
@@ -247,6 +250,7 @@ _LAZY: dict[str, str] = {
     "OfficeSlidesHandler": "readeverything.handlers.office_slides",
     "OfficeWordHandler": "readeverything.handlers.office_word",
     "PageRef": "readeverything.domain.locators",
+    "PartSpan": "readeverything.domain.locators",
     "PdfHandler": "readeverything.handlers.pdf",
     "PdfiumProbe": "readeverything.adapters.pdfium_probe",
     "Perception": "readeverything.pipeline.perception",
