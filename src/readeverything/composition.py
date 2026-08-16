@@ -19,10 +19,14 @@ from readeverything.adapters.detection import PuremagicDetector
 from readeverything.adapters.hashing import ContentHasher, StatMemo
 from readeverything.adapters.local_source import LocalFileSource
 from readeverything.adapters.model_probe import ModelProbe
+from readeverything.adapters.nested_source import CompositeOpener, NestedSource
 from readeverything.adapters.probing import discover
 from readeverything.adapters.semaphore_limiter import SemaphoreLimiter
+from readeverything.adapters.tar_archive import TarArchiveOpener
+from readeverything.adapters.zip_archive import ZipArchiveOpener
 from readeverything.domain.capability import Capability, CapabilitySet
 from readeverything.domain.errors import DomainError
+from readeverything.handlers.archive import ArchiveHandler
 from readeverything.handlers.binary import BinaryHandler
 from readeverything.handlers.text import TextHandler
 from readeverything.pipeline.perception import Perception
@@ -30,12 +34,13 @@ from readeverything.pipeline.resolution import ResolutionMemo
 from readeverything.ports.artifacts import ArtifactStore
 from readeverything.ports.captions import CaptionExtractor
 from readeverything.ports.clips import ClipModel
+from readeverything.ports.containers import ArchiveOpener, ContainerLimits
 from readeverything.ports.handler import MediaHandler
 from readeverything.ports.limits import Limiter
 from readeverything.ports.observation import Observer
 from readeverything.ports.probe import CapabilityProbe
 from readeverything.ports.recognition import TextRecognizer
-from readeverything.ports.source import SourceReader
+from readeverything.ports.source import FileSource, SourceReader
 from readeverything.ports.transcription import Transcriber
 from readeverything.ports.vision import VisionModel
 from readeverything.registry.registry import MimeTypeRegistry
@@ -199,6 +204,56 @@ def _audio_handler(
     ]
 
 
+#: `build_perception`'s default for `containers`: descent ON, with §3.3's
+#: values. A module-level singleton rather than a call in the signature
+#: because a call there is a mutable-default trap in general -- harmless for a
+#: frozen dataclass, but not worth teaching a reader to accept the shape.
+DESCEND_INTO_CONTAINERS = ContainerLimits()
+
+
+def _source_and_openers(
+    root: Path | str,
+    containers: ContainerLimits | None,
+    archives: ArchiveOpener | None,
+) -> tuple[FileSource, ArchiveOpener]:
+    """The source to read through, and the openers to describe archives with.
+
+    `containers=None` yields today's behavior EXACTLY, including no extra
+    opens during `walk`: the decorator is not constructed at all, rather than
+    constructed and told to do nothing, so there is no new code path to
+    regress. The openers are still built, because `ArchiveHandler` describes a
+    container either way -- a card is a probe, not a descent, and turning
+    descent off should not cost a caller the ability to see what is in a
+    tarball.
+    """
+    source = LocalFileSource(root=root)
+    openers: ArchiveOpener = (
+        CompositeOpener(
+            openers=[
+                ZipArchiveOpener(),
+                TarArchiveOpener(
+                    max_materialised_bytes=(
+                        ContainerLimits() if containers is None else containers
+                    ).max_materialised_bytes
+                ),
+            ]
+        )
+        if archives is None
+        else archives
+    )
+    if containers is None:
+        return source, openers
+    return (
+        NestedSource(
+            source,
+            limits=containers,
+            archives=openers,
+            detector=PuremagicDetector(),
+        ),
+        openers,
+    )
+
+
 async def build_perception(
     root: Path | str,
     *,
@@ -211,6 +266,8 @@ async def build_perception(
     probe_binaries: bool = True,
     observer: Observer | None = None,
     limiter: Limiter | None = None,
+    containers: ContainerLimits | None = DESCEND_INTO_CONTAINERS,
+    archives: ArchiveOpener | None = None,
 ) -> Perception:
     """A `Perception` over `root`, with everything else defaulted.
 
@@ -244,8 +301,16 @@ async def build_perception(
     loop (over `list()`), so it already controls whatever concurrency it wants
     and bounding that here too would only fight it. The bound this default
     supplies is strictly within a single file's read.
+
+    `containers` controls descent into archives. It defaults to
+    `ContainerLimits()` -- descent ON, because a library whose promise is
+    "read everything" should read the tarball. Passing `None` disables it and
+    yields today's behavior exactly, including no extra opens during `walk`.
+    `archives` overrides the bundled zip and tar openers, which is the
+    extension point for `.7z` or `.rar` without this repository growing a
+    dependency on either.
     """
-    source = LocalFileSource(root=root)
+    source, openers = _source_and_openers(root, containers, archives)
     limiter = SemaphoreLimiter() if limiter is None else limiter
     handlers: list[MediaHandler] = [
         TextHandler(source=source, observer=observer),
@@ -253,6 +318,7 @@ async def build_perception(
         *_optional_pdf_handler(source, vision, observer),
         *_video_handler(source, vision, transcriber, captions, watcher, observer, limiter),
         *_audio_handler(source, transcriber, observer),
+        ArchiveHandler(source=source, archives=openers, observer=observer),
         # The fallback claims "*", so it must be last: the registry breaks a
         # rank tie by registration order, and a fallback registered first would
         # shadow nothing but would rank ahead of an equally-specific match.
