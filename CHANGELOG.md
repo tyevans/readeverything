@@ -14,6 +14,21 @@ words.
 
 ### Added
 
+- **An HTML handler.** A saved article, a scraped page or an emailed report
+  used to match `kind:text` and come back as raw markup — tags, inline scripts
+  and stylesheets, which on a real page is most of the bytes and none of the
+  answer. `HtmlHandler` claims `text/html` and `application/xhtml+xml` at the
+  registry's exact-mimetype step and returns prose, with `read_section` and
+  `read_range` reading exactly as they do on a Word document.
+
+  What it does not give up is the citation. Every locator points into the
+  ORIGINAL markup, not into the stripped text, so slicing the file at a
+  citation and collapsing its whitespace reproduces the quoted sentence — a
+  property test pins that down. Stripping tags is precisely the operation that
+  usually breaks provenance, and this is the handler that does not.
+
+  Costs no new dependency: the offsets come from stdlib `html.parser`, which
+  reports the source position of every event.
 - **`page_image` on the Word, slide and spreadsheet handlers.** One page as a
   PNG, at whatever dpi you ask for, straight into the vision path that already
   reads PDFs and photographs. A Word document gains pagination this way that

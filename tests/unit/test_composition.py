@@ -17,6 +17,7 @@ from readeverything.composition import build_perception
 from readeverything.domain.capability import Capability, CapabilitySet
 from readeverything.domain.errors import DomainError
 from readeverything.domain.identity import ContentHash, MimeType, SourceRef
+from readeverything.domain.locators import CharSpan
 from readeverything.domain.rendition import Budget
 from readeverything.handlers.audio import AudioHandler
 from readeverything.handlers.video import VideoHandler
@@ -500,3 +501,34 @@ async def test_the_renderer_and_the_perception_share_one_artifact_store(
     renderer = handler._renderer  # type: ignore[attr-defined]
     assert isinstance(renderer, SofficeRenderer)
     assert renderer._artifacts is store
+
+
+async def test_an_html_file_is_read_as_prose_rather_than_markup(tmp_path: Path) -> None:
+    """The sentence this handler exists for, through the real root.
+
+    Before it, `text/html` matched `TextHandler` at `MatchRank.KIND` and a
+    saved article came back as tags, scripts and stylesheets.
+    """
+    page = tmp_path / "article.html"
+    page.write_text(
+        "<html><head><title>A Title</title></head><body>"
+        "<h1>The Heading</h1><p>The prose.</p>"
+        "<script>var junk = 1;</script></body></html>"
+    )
+    perception = await build_perception(tmp_path)
+    rendered = await perception.represent("article.html", Budget(max_chars=None))
+    assert "The prose." in rendered.text
+    assert "<h1>" not in rendered.text
+    assert "var junk" not in rendered.text
+
+
+async def test_an_html_files_citation_points_into_the_original_markup(tmp_path: Path) -> None:
+    source = "<html><body><h1>The Heading</h1><p>A sentence worth quoting.</p></body></html>"
+    page = tmp_path / "article.html"
+    page.write_text(source)
+    perception = await build_perception(tmp_path)
+    rendered = await perception.represent("article.html", Budget(max_chars=None))
+    offset = rendered.text.index("A sentence worth quoting.")
+    locator = rendered.locator_map.resolve(offset)
+    assert isinstance(locator, CharSpan)
+    assert source[locator.start : locator.end].strip() == "A sentence worth quoting."

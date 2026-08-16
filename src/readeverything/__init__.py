@@ -111,6 +111,7 @@ if TYPE_CHECKING:
     from readeverything.handlers.archive import ArchiveHandler as ArchiveHandler
     from readeverything.handlers.audio import AudioHandler as AudioHandler
     from readeverything.handlers.binary import BinaryHandler as BinaryHandler
+    from readeverything.handlers.html import HtmlHandler as HtmlHandler
     from readeverything.handlers.image import ImageHandler as ImageHandler
     from readeverything.handlers.office_sheets import (
         OfficeSheetsHandler as OfficeSheetsHandler,
@@ -220,6 +221,7 @@ _LAZY: dict[str, str] = {
     "FileSource": "readeverything.ports.source",
     "FilesystemArtifactStore": "readeverything.adapters.artifact_store",
     "ImageContent": "readeverything.domain.rendition",
+    "HtmlHandler": "readeverything.handlers.html",
     "ImageHandler": "readeverything.handlers.image",
     "InMemoryArtifactStore": "readeverything.adapters.artifact_store",
     "InfrastructureError": "readeverything.domain.errors",

@@ -29,6 +29,7 @@ from readeverything.domain.capability import Capability, CapabilitySet
 from readeverything.domain.errors import DomainError
 from readeverything.handlers.archive import ArchiveHandler
 from readeverything.handlers.binary import BinaryHandler
+from readeverything.handlers.html import HtmlHandler
 from readeverything.handlers.text import TextHandler
 from readeverything.pipeline.perception import Perception
 from readeverything.pipeline.resolution import ResolutionMemo
@@ -435,6 +436,13 @@ async def build_perception(
     wired_renderer = _renderer_to_wire(renderer, artifacts, limiter)
     handlers: list[MediaHandler] = [
         TextHandler(source=source, observer=observer),
+        # Unconditional, unlike the handlers below it: reading html needs no
+        # optional dependency and no binary, so there is no install in which
+        # it would be absent. It sits above `TextHandler` in specificity
+        # rather than in this list -- `text/html` matches at `MatchRank.EXACT`
+        # and `kind:text` at `MatchRank.KIND` -- so the order here is
+        # cosmetic, and it is placed next to `TextHandler` to read that way.
+        HtmlHandler(source=source, observer=observer),
         *_optional_image_handler(source, vision, observer),
         *_optional_pdf_handler(source, vision, observer),
         *_optional_office_handlers(source, vision, wired_renderer, observer),
