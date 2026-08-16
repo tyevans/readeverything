@@ -26,10 +26,12 @@ from readeverything.domain.rendition import (
     TextContent,
     TranscriptCue,
 )
+from readeverything.handlers import video as video_module
 from readeverything.handlers.video import (
     CAPTION_MARKER,
     MOMENT_SEPARATOR,
     SPEECH_MARKER,
+    AskAboutFrameParams,
     DescribeFrameParams,
     FrameAtParams,
     VideoHandler,
@@ -965,6 +967,19 @@ async def test_describe_frame_returns_a_description_located_in_time(sample_video
     assert not rendition.degraded
 
 
+async def test_describe_frame_acquires_the_vision_limiter(sample_video: str) -> None:
+    """A test asserting only a description came back would pass just as well
+    against an unwrapped vision call. `_BoundedCountingLimiter.peak` only
+    gains a `Capability.VISION` entry if `self._limit(Capability.VISION)` was
+    actually entered, so this fails on a `describe_frame` that regresses to
+    calling the vision model unbounded."""
+    limiter = _BoundedCountingLimiter({Capability.VISION: 1, Capability.FFMPEG: 1})
+    await _handler(sample_video, vision=FakeVision(), limiter=limiter).invoke(
+        _ref(), "describe_frame", DescribeFrameParams(seconds=2.5)
+    )
+    assert limiter.peak[Capability.VISION] == 1
+
+
 async def test_describe_frame_is_unknown_without_vision(sample_video: str) -> None:
     with pytest.raises(UnknownAffordanceError):
         await _handler(sample_video, vision=None).invoke(
@@ -1533,3 +1548,74 @@ def test_a_long_clip_cost_is_not_extrapolated() -> None:
     assert "88,033" in message
     assert "1,260,000" not in message
     assert "at least" in message
+
+
+async def test_ask_about_image_is_absent_without_a_vision_model(sample_video: str) -> None:
+    handler = _handler(sample_video)
+    assert "ask_about_image" not in {a.name for a in handler.affordances()}
+
+
+async def test_ask_about_image_asks_about_the_frame_at_a_time(sample_video: str) -> None:
+    vision = FakeVision()
+    handler = _handler(sample_video, vision=vision)
+    rendition = await handler.invoke(
+        _ref(), "ask_about_image", AskAboutFrameParams(question="Who is speaking?", seconds=2.0)
+    )
+    assert isinstance(rendition.content, TextContent)
+    assert "Who is speaking?" in rendition.content.text
+    assert vision.calls == 1
+
+
+async def test_the_locator_is_the_timespan(sample_video: str) -> None:
+    handler = _handler(sample_video, vision=FakeVision())
+    rendition = await handler.invoke(
+        _ref(), "ask_about_image", AskAboutFrameParams(question="q", seconds=2.0)
+    )
+    assert isinstance(rendition.locator, TimeSpan)
+    assert rendition.locator.start_s == 2.0
+
+
+async def test_a_region_narrows_what_the_model_sees(sample_video: str) -> None:
+    vision = FakeVision()
+    handler = _handler(sample_video, vision=vision)
+    whole = await handler.invoke(
+        _ref(), "ask_about_image", AskAboutFrameParams(question="q", seconds=1.0)
+    )
+    part = await handler.invoke(
+        _ref(),
+        "ask_about_image",
+        AskAboutFrameParams(question="q", seconds=1.0, x=0.0, y=0.0, w=0.5, h=0.5),
+    )
+    assert isinstance(whole.content, TextContent)
+    assert isinstance(part.content, TextContent)
+    assert whole.content.text != part.content.text
+
+
+async def test_a_region_without_pillow_degrades_rather_than_raising(
+    sample_video: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`composition.py` builds `VideoHandler` regardless of whether Pillow is
+    installed, so a region request made without it must degrade — not raise
+    `ImportError` from a `from PIL import Image` no guard caught. Patching
+    the module's own `_PIL_AVAILABLE` name check exercises exactly the branch
+    `_ask_about_frame` takes when Pillow is genuinely absent, without needing
+    to fake Pillow's absence from `sys.modules` for a module that already
+    imports it nowhere at module scope."""
+    monkeypatch.setattr(video_module, "_PIL_AVAILABLE", False)
+    handler = _handler(sample_video, vision=FakeVision())
+    rendition = await handler.invoke(
+        _ref(),
+        "ask_about_image",
+        AskAboutFrameParams(question="q", seconds=1.0, x=0.0, y=0.0, w=0.5, h=0.5),
+    )
+    assert rendition.degraded
+    assert isinstance(rendition.content, TextContent)
+    assert "Pillow" in rendition.content.text
+
+
+async def test_an_unreachable_frame_degrades_rather_than_raising() -> None:
+    handler = _stub_handler(_facts(), frames=_NoFrames(), vision=FakeVision())
+    rendition = await handler.invoke(
+        _ref(), "ask_about_image", AskAboutFrameParams(question="q", seconds=1.0)
+    )
+    assert rendition.degraded

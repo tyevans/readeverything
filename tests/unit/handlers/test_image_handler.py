@@ -7,12 +7,13 @@ from PIL import Image
 from pydantic import ValidationError
 
 from readeverything.domain.capability import Capability
-from readeverything.domain.errors import UnknownAffordanceError
+from readeverything.domain.errors import InfrastructureError, UnknownAffordanceError
 from readeverything.domain.identity import ContentHash, MediaKind, MimeType, SourceRef
 from readeverything.domain.locators import BBox
 from readeverything.domain.observation import OperationFinished, OperationStarted
 from readeverything.domain.rendition import Budget, ImageContent, TextContent
 from readeverything.handlers.image import (
+    AskAboutImageParams,
     CropParams,
     DescribeImageParams,
     ImageHandler,
@@ -104,9 +105,9 @@ def test_without_vision_only_crop_is_offered() -> None:
     assert names == ("crop_region",)
 
 
-def test_with_vision_all_three_are_offered() -> None:
+def test_with_vision_all_four_are_offered() -> None:
     names = tuple(a.name for a in _seeing().affordances())
-    assert set(names) == {"crop_region", "describe_image", "ocr"}
+    assert set(names) == {"crop_region", "describe_image", "ocr", "ask_about_image"}
 
 
 def test_the_model_backed_affordances_declare_the_vision_capability() -> None:
@@ -329,6 +330,63 @@ class TestImageHandlerCompliance(MediaHandlerCompliance):
     @pytest.fixture
     def ref(self, content: bytes) -> SourceRef:
         return _ref()
+
+
+async def test_ask_about_image_is_absent_without_a_vision_model() -> None:
+    assert "ask_about_image" not in {a.name for a in _handler().affordances()}
+
+
+async def test_ask_about_image_is_offered_with_a_vision_model() -> None:
+    assert "ask_about_image" in {a.name for a in _seeing().affordances()}
+
+
+async def test_ask_about_image_puts_the_question_to_the_model() -> None:
+    vision = FakeVision()
+    handler = ImageHandler(source=FakeSource({"a.png": PNG}), vision=vision)
+    rendition = await handler.invoke(
+        _ref(), "ask_about_image", AskAboutImageParams(question="How many cats?")
+    )
+    assert isinstance(rendition.content, TextContent)
+    assert "How many cats?" in rendition.content.text
+    assert vision.calls == 1
+
+
+async def test_a_region_sends_the_model_different_bytes_than_the_whole_image() -> None:
+    """FakeVision reports the byte count it received, so this asserts on what
+    reached the model rather than on the prose that came back."""
+    vision = FakeVision()
+    handler = ImageHandler(source=FakeSource({"a.png": PNG}), vision=vision)
+    whole = await handler.invoke(_ref(), "ask_about_image", AskAboutImageParams(question="q"))
+    part = await handler.invoke(
+        _ref(),
+        "ask_about_image",
+        AskAboutImageParams(question="q", x=0.0, y=0.0, w=0.25, h=0.25),
+    )
+    assert isinstance(whole.content, TextContent)
+    assert isinstance(part.content, TextContent)
+    assert whole.content.text != part.content.text
+
+
+async def test_a_region_is_the_locator() -> None:
+    handler = ImageHandler(source=FakeSource({"a.png": PNG}), vision=FakeVision())
+    rendition = await handler.invoke(
+        _ref(),
+        "ask_about_image",
+        AskAboutImageParams(question="q", x=0.1, y=0.2, w=0.3, h=0.4),
+    )
+    assert isinstance(rendition.locator, BBox)
+    assert (rendition.locator.x, rendition.locator.y) == (0.1, 0.2)
+
+
+async def test_an_empty_completion_is_not_an_answer() -> None:
+    handler = ImageHandler(source=FakeSource({"a.png": PNG}), vision=FakeVisionRefusing())
+    with pytest.raises(InfrastructureError):
+        await handler.invoke(_ref(), "ask_about_image", AskAboutImageParams(question="q"))
+
+
+def test_a_question_is_required() -> None:
+    with pytest.raises(ValidationError):
+        AskAboutImageParams.model_validate({})
 
 
 def test_a_missing_pillow_names_the_extra_not_the_package(

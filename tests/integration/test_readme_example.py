@@ -63,7 +63,7 @@ async def test_the_readme_example_runs(tmp_path: Path, capsys: pytest.CaptureFix
     await eval(code, namespace)
 
     assert namespace["card"].kind == "text"
-    assert len(namespace["tools"]) == 3
+    assert len(namespace["tools"]) == 4
     assert "notes.txt" in capsys.readouterr().out, (
         "the example's observer is what makes it an example about watching a read"
     )

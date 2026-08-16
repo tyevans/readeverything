@@ -22,7 +22,7 @@ async def test_an_agent_can_see_a_directory_of_mixed_files(media_root: Path) -> 
     """
     perception = await build_perception(media_root, vision=FakeVision(), probe_binaries=False)
     tools = {tool.name: tool for tool in build_tools(perception)}
-    assert set(tools) == {"inspect_path", "list_paths", "invoke_affordance"}
+    assert set(tools) == {"inspect_path", "list_paths", "invoke_affordance", "ask_about_image"}
 
     listing = await tools["list_paths"].ainvoke({"uri": "."})
     assert "notes.txt" in listing and "photo.png" in listing

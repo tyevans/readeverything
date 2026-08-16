@@ -21,7 +21,14 @@ import importlib.util
 import io
 import time
 from enum import Enum
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
+
+if TYPE_CHECKING:
+    # Annotation-only, per `regions.py`'s own pattern: `from __future__ import
+    # annotations` (above) keeps this out of runtime evaluation, so it costs
+    # nothing when Pillow is absent. `PIL` stays confined to `handlers/image.py`
+    # and `handlers/regions.py` at runtime; only the type checker sees this.
+    from PIL import Image
 
 try:
     import pypdfium2 as pdfium  # type: ignore[import-untyped]  # pypdfium2 ships no py.typed
@@ -50,10 +57,12 @@ from readeverything.domain.rendition import (
     Rendition,
     TextContent,
 )
+from readeverything.handlers.regions import RegionParams, crop_to_region, region_bbox
 from readeverything.ports.observation import Observer, emit
 from readeverything.ports.probe_media import MediaProbe
 from readeverything.ports.recognition import TextRecognizer
 from readeverything.ports.source import SourceReader
+from readeverything.ports.vision import VisionModel
 
 #: What `represent` calls itself when it narrates. Matches the name every
 #: other handler uses, per `video.py`.
@@ -146,6 +155,12 @@ class OcrPageParams(BaseModel):
     dpi: int = Field(default=150, gt=0, description="Render resolution, in dots per inch.")
 
 
+class AskAboutPageParams(RegionParams):
+    question: str = Field(description="What you want to know about the page.")
+    page: int = Field(default=1, ge=1, description="1-indexed page number.")
+    dpi: int = Field(default=150, gt=0, description="Render resolution, in dots per inch.")
+
+
 def _listed(numbers: list[int], limit: int = 10) -> str:
     head = ", ".join(str(number) for number in numbers[:limit])
     if len(numbers) <= limit:
@@ -167,11 +182,13 @@ class PdfHandler:
         source: SourceReader,
         probe: MediaProbe,
         recognizer: TextRecognizer | None = None,
+        vision: VisionModel | None = None,
         observer: Observer | None = None,
     ) -> None:
         self._source = source
         self._probe = probe
         self._recognizer = recognizer
+        self._vision = vision
         self._observer = observer
 
     def requires(self) -> frozenset[Capability]:
@@ -217,6 +234,21 @@ class PdfHandler:
                     requires=frozenset({Capability.VISION}),
                     level=DetailLevel.DEEP,
                 )
+            )
+        if self._vision is not None:
+            affordances.append(
+                Affordance(
+                    name="ask_about_image",
+                    description=(
+                        "Ask a vision model a question about a rendered page, or about "
+                        "a rectangular region of one. Use this when the answer is in a "
+                        "chart, a diagram or a scan rather than in the page's own text "
+                        "— read_page is far cheaper when the text is really there."
+                    ),
+                    params=AskAboutPageParams,
+                    requires=frozenset({Capability.VISION}),
+                    level=DetailLevel.DEEP,
+                ),
             )
         return tuple(affordances)
 
@@ -293,14 +325,22 @@ class PdfHandler:
                 if not isinstance(params, OcrPageParams):
                     raise TypeError(f"expected OcrPageParams, got {type(params).__name__}")
                 return await self._ocr_page(ref, params.page, params.dpi)
+            case "ask_about_image":
+                if not isinstance(params, AskAboutPageParams):
+                    raise TypeError(f"expected AskAboutPageParams, got {type(params).__name__}")
+                return await self._ask_about_page(ref, params)
             case _:
                 raise UnknownAffordanceError(name, (a.name for a in self.affordances()))
 
-    def _degraded_text(self, locator: PageRef | ByteRange, detail: str) -> Rendition:
+    def _degraded_text(self, locator: PageRef | ByteRange | BBox, detail: str) -> Rendition:
         """What every out-of-range or missing-page request returns.
 
         Never an exception: an agent guessing a page number gets a result it
-        can read and correct.
+        can read and correct. `BBox` joined the union for `ask_about_image`'s
+        two post-region-resolution degradations, where the caller's rectangle
+        is exactly what a consumer needs to know what was asked and failed —
+        collapsing it to a bare `PageRef` would discard the x/y/w/h the caller
+        supplied.
         """
         return Rendition(locator=locator, content=TextContent(detail), degraded=True)
 
@@ -356,12 +396,26 @@ class PdfHandler:
         finally:
             document.close()
 
-    def _render_png(self, page: pdfium.PdfPage, dpi: int) -> bytes:
+    def _render_pil(self, page: pdfium.PdfPage, dpi: int) -> Image.Image:
+        """The page rendered as a PIL image, not yet encoded to bytes.
+
+        `Image.Image` is a type-checking-only name here (see the
+        `TYPE_CHECKING` import above, mirroring `regions.py`): this module
+        must stay importable with Pillow absent (`_PIL_AVAILABLE` is the
+        runtime guard, checked by name rather than imported), so it never
+        names `PIL` at runtime — `pdfium`'s own `to_pil()` is what actually
+        touches Pillow. `PIL` is confined to `handlers/image.py` and
+        `handlers/regions.py` at runtime; this module must not become a third
+        home.
+        """
         bitmap = page.render(scale=dpi / 72)
         try:
-            pil_image = bitmap.to_pil()
+            return bitmap.to_pil()  # type: ignore[no-any-return]  # pypdfium2 ships no py.typed
         finally:
             bitmap.close()
+
+    def _render_png(self, page: pdfium.PdfPage, dpi: int) -> bytes:
+        pil_image = self._render_pil(page, dpi)
         buffer = io.BytesIO()
         pil_image.save(buffer, format="PNG")
         return buffer.getvalue()
@@ -420,6 +474,52 @@ class PdfHandler:
         # same distinction this project already draws for synthesized text.
         text = await self._recognizer.recognize(png, "image/png")
         return Rendition(locator=PageRef(number), content=TextContent(text), degraded=True)
+
+    async def _ask_about_page(self, ref: SourceRef, params: AskAboutPageParams) -> Rendition:
+        if self._vision is None:
+            raise UnknownAffordanceError("ask_about_image", (a.name for a in self.affordances()))
+        data = await self._source.read_bytes(ref.uri)
+        document = self._open(data)
+        if document is None:
+            return self._degraded_text(
+                ByteRange(0, max(1, ref.size_bytes)), f"{ref.uri} could not be opened as a PDF"
+            )
+        try:
+            if params.page > len(document):
+                return self._degraded_text(
+                    ByteRange(0, max(1, ref.size_bytes)),
+                    f"page {params.page} does not exist; the document has {len(document)} page(s)",
+                )
+            if not _PIL_AVAILABLE:
+                return self._degraded_text(
+                    PageRef(params.page),
+                    "page could not be rendered: Pillow is not installed",
+                )
+            pil_image = self._render_pil(document[params.page - 1], params.dpi)
+        finally:
+            document.close()
+        if params.is_whole_frame:
+            buffer = io.BytesIO()
+            pil_image.save(buffer, format="PNG")
+            png = buffer.getvalue()
+        else:
+            png = crop_to_region(pil_image, params)
+        try:
+            text = await self._vision.describe(png, "image/png", params.question)
+        except Exception:
+            return self._degraded_text(
+                region_bbox(params, page=params.page),
+                f"the vision model failed to answer about page {params.page}",
+            )
+        if not text.strip():
+            return self._degraded_text(
+                region_bbox(params, page=params.page),
+                f"the vision model returned no answer about page {params.page}",
+            )
+        return Rendition(
+            locator=region_bbox(params, page=params.page),
+            content=TextContent(" ".join(text.split())),
+        )
 
     async def represent(self, ref: SourceRef, budget: Budget) -> Rendered:
         """Narrated start to finish, matching `AudioHandler`/`VideoHandler`.

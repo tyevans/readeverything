@@ -29,7 +29,7 @@ except ImportError as exc:  # pragma: no cover - exercised via a patched sys.mod
         "The composition root omits image handling when Pillow is absent, so "
         "reaching this means the handler was imported directly."
     ) from exc
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field
 
 from readeverything.domain.affordance import Affordance, DetailLevel
 from readeverything.domain.capability import Capability
@@ -47,6 +47,7 @@ from readeverything.domain.rendition import (
     Rendition,
     TextContent,
 )
+from readeverything.handlers.regions import RegionParams, crop_to_region, region_bbox
 from readeverything.ports.observation import Observer, emit
 from readeverything.ports.source import SourceReader
 from readeverything.ports.vision import VisionModel
@@ -75,27 +76,14 @@ class OcrParams(BaseModel):
     pass
 
 
-class CropParams(BaseModel):
-    x: float = Field(default=0.0, ge=0.0, le=1.0, description="Left edge, 0-1 of image width.")
-    y: float = Field(default=0.0, ge=0.0, le=1.0, description="Top edge, 0-1 of image height.")
-    w: float = Field(default=1.0, gt=0.0, le=1.0, description="Width, 0-1 of image width.")
-    h: float = Field(default=1.0, gt=0.0, le=1.0, description="Height, 0-1 of image height.")
+class CropParams(RegionParams):
+    """The whole-image crop affordance's params. Coordinates come from `RegionParams`."""
 
-    @model_validator(mode="after")
-    def _stay_inside_the_frame(self) -> CropParams:
-        """A crop running off the edge is a parameter error, so reject it here.
 
-        `BBox` catches it too, but only once the crop is already running — the
-        caller then sees a bare `ValueError` from deep inside the domain rather
-        than a rejection at the boundary where their mistake was. The `BBox`
-        check stays as the backstop for every other path that builds one.
-        """
-        if self.x + self.w > 1.0 or self.y + self.h > 1.0:
-            raise ValueError(
-                f"crop must be within the unit square, got x={self.x} y={self.y} "
-                f"w={self.w} h={self.h}"
-            )
-        return self
+class AskAboutImageParams(RegionParams):
+    """A free-form question about the whole image, or a region of it."""
+
+    question: str = Field(description="What you want to know about the image.")
 
 
 class ImageHandler:
@@ -146,6 +134,19 @@ class ImageHandler:
                 name="ocr",
                 description="Transcribe text visible in the image.",
                 params=OcrParams,
+                requires=frozenset({Capability.VISION}),
+                level=DetailLevel.DEEP,
+            ),
+            Affordance(
+                name="ask_about_image",
+                description=(
+                    "Ask a vision model a question about this image, or about a "
+                    "rectangular region of it. Give x/y/w/h as fractions 0-1 to ask "
+                    "about part of it; omit them to ask about the whole image. "
+                    "Asking about a region costs the same as asking about the whole "
+                    "image — use it to be precise, not to save."
+                ),
+                params=AskAboutImageParams,
                 requires=frozenset({Capability.VISION}),
                 level=DetailLevel.DEEP,
             ),
@@ -212,23 +213,9 @@ class ImageHandler:
                 if not isinstance(params, CropParams):
                     raise TypeError(f"expected CropParams, got {type(params).__name__}")
                 image = await self._require_image(ref)
-                box = (
-                    int(params.x * image.width),
-                    int(params.y * image.height),
-                    max(
-                        int((params.x + params.w) * image.width),
-                        int(params.x * image.width) + 1,
-                    ),
-                    max(
-                        int((params.y + params.h) * image.height),
-                        int(params.y * image.height) + 1,
-                    ),
-                )
-                buffer = io.BytesIO()
-                image.crop(box).save(buffer, format="PNG")
                 return Rendition(
-                    locator=BBox(page=None, x=params.x, y=params.y, w=params.w, h=params.h),
-                    content=ImageContent(data=buffer.getvalue(), mime="image/png"),
+                    locator=region_bbox(params),
+                    content=ImageContent(data=crop_to_region(image, params), mime="image/png"),
                 )
             case "describe_image":
                 if not isinstance(params, DescribeImageParams):
@@ -240,6 +227,26 @@ class ImageHandler:
                     raise TypeError(f"expected OcrParams, got {type(params).__name__}")
                 text = await self._see(ref, _OCR_PROMPT, "ocr")
                 return Rendition(locator=WHOLE_IMAGE, content=TextContent(text))
+            case "ask_about_image":
+                if not isinstance(params, AskAboutImageParams):
+                    raise TypeError(f"expected AskAboutImageParams, got {type(params).__name__}")
+                if self._vision is None:
+                    raise UnknownAffordanceError(
+                        "ask_about_image", (a.name for a in self.affordances())
+                    )
+                if params.is_whole_frame:
+                    text = await self._see(ref, params.question, "ask_about_image")
+                else:
+                    image = await self._require_image(ref)
+                    cropped = crop_to_region(image, params)
+                    text = await self._vision.describe(cropped, "image/png", params.question)
+                    if not text.strip():
+                        # Same guard as `_see`: an empty completion is a failure,
+                        # not an answer, and must not reach the caller as text.
+                        raise InfrastructureError(
+                            f"vision model returned no description for {ref.uri}"
+                        )
+                return Rendition(locator=region_bbox(params), content=TextContent(text))
             case _:
                 raise UnknownAffordanceError(name, (a.name for a in self.affordances()))
 

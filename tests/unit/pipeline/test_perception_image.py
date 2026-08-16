@@ -58,7 +58,12 @@ async def test_without_vision_the_agent_sees_only_crop(tmp_path: Path) -> None:
 
 async def test_with_vision_the_agent_sees_all_three(tmp_path: Path) -> None:
     card = await _perception(tmp_path, seeing=True).inspect("photo.png")
-    assert set(card.affordance_names()) == {"crop_region", "describe_image", "ocr"}
+    assert set(card.affordance_names()) == {
+        "crop_region",
+        "describe_image",
+        "ocr",
+        "ask_about_image",
+    }
 
 
 async def test_without_vision_describe_is_not_invocable(tmp_path: Path) -> None:

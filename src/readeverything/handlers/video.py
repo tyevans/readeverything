@@ -32,6 +32,8 @@ arrive by injection. Nothing here imports an adapter.
 from __future__ import annotations
 
 import asyncio
+import importlib.util
+import io
 import time
 from contextlib import AbstractAsyncContextManager, nullcontext
 from typing import ClassVar
@@ -61,6 +63,7 @@ from readeverything.domain.rendition import (
     TranscriptCue,
 )
 from readeverything.domain.timeline import clamp_cues_to_duration, tile
+from readeverything.handlers.regions import RegionParams, crop_to_region
 from readeverything.ports.audio import AudioExtractor
 from readeverything.ports.captions import CaptionExtractor
 from readeverything.ports.clip_source import ClipExtractor
@@ -119,6 +122,11 @@ EXTRACTED_MIME = "audio/wav"
 CLIP_MIME = "video/mp4"
 
 _FRAME_PROMPT = "Describe what is visible in this video frame, in one or two sentences."
+
+#: Checked by name rather than imported, so this module stays importable with
+#: Pillow absent, exactly like `pdf.py`'s `_PIL_AVAILABLE` — `composition.py`
+#: builds `VideoHandler` regardless of whether the 'images' extra is present.
+_PIL_AVAILABLE = importlib.util.find_spec("PIL") is not None
 
 #: What `represent` calls itself when it narrates.
 _OPERATION = "represent"
@@ -207,6 +215,13 @@ class DescribeFrameParams(BaseModel):
     )
     prompt: str = Field(
         default=_FRAME_PROMPT, description="What to ask the vision model about the frame."
+    )
+
+
+class AskAboutFrameParams(RegionParams):
+    question: str = Field(description="What you want to know about the frame.")
+    seconds: float = Field(
+        default=0.0, ge=0.0, description="Point in the timeline to extract a frame from."
     )
 
 
@@ -346,6 +361,21 @@ class VideoHandler:
                     level=DetailLevel.DEEP,
                 )
             )
+            affordances.append(
+                Affordance(
+                    name="ask_about_image",
+                    description=(
+                        "Ask a vision model a question about the frame at one moment, "
+                        "or about a rectangular region of it. Read the transcript first "
+                        "— it is far cheaper and usually answers the question. The "
+                        "result is located by time; a region narrows what the model "
+                        "sees but is not carried in the locator."
+                    ),
+                    params=AskAboutFrameParams,
+                    requires=frozenset({Capability.FFMPEG, Capability.VISION}),
+                    level=DetailLevel.DEEP,
+                )
+            )
         if self._clips is not None and self._watcher is not None:
             affordances.append(
                 Affordance(
@@ -382,6 +412,12 @@ class VideoHandler:
                 if not isinstance(params, DescribeFrameParams):
                     raise TypeError(f"expected DescribeFrameParams, got {type(params).__name__}")
                 return await self._describe_frame(ref, params.seconds, params.prompt)
+            case "ask_about_image":
+                if self._vision is None:
+                    raise UnknownAffordanceError(name, (a.name for a in self.affordances()))
+                if not isinstance(params, AskAboutFrameParams):
+                    raise TypeError(f"expected AskAboutFrameParams, got {type(params).__name__}")
+                return await self._ask_about_frame(ref, params)
             case "watch_segment":
                 if self._clips is None or self._watcher is None:
                     raise UnknownAffordanceError(name, (a.name for a in self.affordances()))
@@ -602,7 +638,8 @@ class VideoHandler:
                 ref, seconds, await self._absent_frame_detail(path, seconds)
             )
         try:
-            text = await self._vision.describe(frame, "image/png", prompt)
+            async with self._limit(Capability.VISION):
+                text = await self._vision.describe(frame, "image/png", prompt)
         except Exception:
             return self._degraded_frame(
                 ref,
@@ -617,6 +654,56 @@ class VideoHandler:
             )
         frame_span = TimeSpan(seconds, seconds + FALLBACK_FRAME_DURATION_S)
         return Rendition(locator=frame_span, content=TextContent(" ".join(text.split())))
+
+    async def _ask_about_frame(self, ref: SourceRef, params: AskAboutFrameParams) -> Rendition:
+        """A question answered about one frame, or a region of it.
+
+        The locator is the `TimeSpan` at `seconds`, never a composite of time
+        and rectangle: the domain has no locator that carries both, and
+        inventing one here would be a change to `LocatorMap` made sideways,
+        through this one affordance. A region narrows what the model SEES —
+        it does not appear in the locator, and the affordance's own
+        description says so, so a caller reading the locator alone is not
+        misled into thinking the whole frame was in view.
+        """
+        if self._vision is None:
+            raise UnknownAffordanceError("ask_about_image", (a.name for a in self.affordances()))
+        seconds = params.seconds
+        try:
+            path = await self._source.local_path(ref.uri)
+        except Exception:
+            return self._degraded_frame(ref, seconds, f"{ref.uri} could not be read")
+        try:
+            frame = await self._frames.frame_at(path, seconds)
+        except Exception:
+            frame = None
+        if frame is None:
+            return self._degraded_frame(
+                ref, seconds, await self._absent_frame_detail(path, seconds)
+            )
+        if not params.is_whole_frame:
+            if not _PIL_AVAILABLE:
+                return self._degraded_frame(
+                    ref, seconds, "region cropping needs Pillow, which is not installed"
+                )
+            from PIL import Image  # lazy: video.py stays importable with Pillow absent
+
+            frame = crop_to_region(Image.open(io.BytesIO(frame)), params)
+        try:
+            async with self._limit(Capability.VISION):
+                text = await self._vision.describe(frame, "image/png", params.question)
+        except Exception:
+            return self._degraded_frame(
+                ref, seconds, f"the vision model failed to answer about {_timestamp(seconds)}"
+            )
+        if not text.strip():
+            return self._degraded_frame(
+                ref, seconds, f"the vision model returned no answer about {_timestamp(seconds)}"
+            )
+        return Rendition(
+            locator=TimeSpan(seconds, seconds + FALLBACK_FRAME_DURATION_S),
+            content=TextContent(" ".join(text.split())),
+        )
 
     async def _facts(self, ref: SourceRef) -> tuple[MediaFacts | None, str | None]:
         """The probe's answer and the path it was read from, or `(None, path)`.

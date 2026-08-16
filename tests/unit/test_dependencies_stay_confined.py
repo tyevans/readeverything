@@ -27,7 +27,14 @@ CONFINED: dict[str, set[str]] = {
     "langchain_openai": {"adapters/vision_langchain.py", "adapters/clip_langchain.py"},
     "puremagic": {"adapters/detection.py"},
     "charset_normalizer": {"handlers/text.py"},
-    "PIL": {"handlers/image.py"},
+    # pdf.py's PIL import is TYPE_CHECKING-only, annotating `_render_pil`'s
+    # return type: `pdfium`'s own `to_pil()` is what touches Pillow at
+    # runtime, and `_PIL_AVAILABLE` (checked by name) is the real guard.
+    # video.py's is a real, but lazy, runtime import confined to
+    # `_ask_about_frame`'s region-cropping branch: `frame_at` hands back raw
+    # PNG bytes rather than a decoded image, so cropping needs an actual
+    # decode, guarded by the same `_PIL_AVAILABLE` name check.
+    "PIL": {"handlers/image.py", "handlers/regions.py", "handlers/pdf.py", "handlers/video.py"},
     "faster_whisper": {"adapters/whisper_transcriber.py"},
     # The remote transcriber is the only place that speaks HTTP directly:
     # every other network-touching adapter goes through langchain's client.
