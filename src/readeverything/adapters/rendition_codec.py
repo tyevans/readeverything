@@ -4,7 +4,7 @@
 not safe here, and the unsafety is silent:
 
 - `Locator` is a non-discriminated union (`TimeSpan | PageRef | BBox |
-  CharSpan | ByteRange`). `CharSpan` and `ByteRange` have identical field
+  CharSpan | ByteRange | CellRange`). `CharSpan` and `ByteRange` have identical field
   shapes (`start`, `end`), so pydantic resolves a serialized `ByteRange` to
   whichever union member comes first in the annotation, which is `CharSpan`.
   A cached hexdump — whose locator is a `ByteRange` — would come back
@@ -29,7 +29,15 @@ import json
 from typing import Any
 
 from readeverything.domain.errors import DomainError
-from readeverything.domain.locators import BBox, ByteRange, CharSpan, Locator, PageRef, TimeSpan
+from readeverything.domain.locators import (
+    BBox,
+    ByteRange,
+    CellRange,
+    CharSpan,
+    Locator,
+    PageRef,
+    TimeSpan,
+)
 from readeverything.domain.rendition import (
     ImageContent,
     Rendition,
@@ -51,6 +59,15 @@ def _encode_locator(locator: Locator) -> dict[str, Any]:
             return {"__type__": "PageRef", "page": page}
         case BBox(page=page, x=x, y=y, w=w, h=h):
             return {"__type__": "BBox", "page": page, "x": x, "y": y, "w": w, "h": h}
+        case CellRange(sheet=sheet, row=row, col=col, rows=rows, cols=cols):
+            return {
+                "__type__": "CellRange",
+                "sheet": sheet,
+                "row": row,
+                "col": col,
+                "rows": rows,
+                "cols": cols,
+            }
     raise DomainError(f"unencodable locator type: {type(locator).__name__}")
 
 
@@ -67,6 +84,14 @@ def _decode_locator(raw: dict[str, Any]) -> Locator:
             return PageRef(raw["page"])
         case "BBox":
             return BBox(raw["page"], raw["x"], raw["y"], raw["w"], raw["h"])
+        case "CellRange":
+            return CellRange(
+                sheet=raw["sheet"],
+                row=raw["row"],
+                col=raw["col"],
+                rows=raw["rows"],
+                cols=raw["cols"],
+            )
         case _:
             raise DomainError(f"unknown locator __type__ tag: {tag!r}")
 

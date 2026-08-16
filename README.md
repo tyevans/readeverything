@@ -120,6 +120,9 @@ service.
 | Text, JSON, XML | `text` | `read_range` | nothing extra |
 | Images | `image` | `crop_region` always; `describe_image` and `ocr` when a vision model is supplied | `images` extra (Pillow) for image handling; a vision model for description and OCR |
 | PDF | `binary` | `read_page`, `page_region`, `page_image`; `ocr_page` when a vision model is supplied | `documents` extra (pypdfium2); a vision model for `ocr_page` |
+| Word (`.docx`, `.odt`) | `binary` | `read_section`, `read_range`, `list_comments`, `read_table` | `office` extra (python-docx, lxml) |
+| Slides (`.pptx`, `.odp`) | `binary` | `read_slide`, `list_media`; `describe_slide_image` when a vision model is supplied | `office` extra (python-pptx, lxml); a vision model for `describe_slide_image` |
+| Spreadsheets (`.xlsx`, `.ods`) | `binary` | `read_sheet`, `read_cells`, `list_sheets` | `office` extra (openpyxl, lxml) |
 | Audio | `audio` | `read_span`, when a transcriber is supplied | `transcription` extra (faster-whisper) and an `ffmpeg` binary |
 | Video | `video` | `frame_at`; `describe_frame` when a vision model is supplied | an `ffmpeg` binary; a vision model for `describe_frame` |
 | Archives (zip, tar, tar.gz, tar.bz2, tar.xz) | `binary` | `list_entries`; members are addressed directly, see below | nothing extra |
@@ -129,8 +132,19 @@ A PDF reports `card.kind == "binary"`, not a kind of its own. `MediaKind` names
 how bytes are *shaped*, and a PDF is a container; the fact that it has pages is
 carried by its affordances, which is where a caller acts on it anyway.
 
-Office documents have no handlers yet — files of those kinds fall through to
-the binary fallback above (a hex dump), not a dedicated representation.
+Office documents are detected by their **content**, not their extension: the
+zip container's part names are what distinguish a `.docx` from a `.pptx` from a
+plain `.zip`, so a deck renamed `report.bin` is still read as a deck.
+
+A spreadsheet shows cached **values** in `represent`, because that is what the
+sheet means; `read_cells(..., formulas=true)` shows the formulas, because that
+is what an auditor needs. When a workbook was saved by a tool that stores no
+cached values, the formula text is shown in their place and a `Degradation`
+says so — a sheet full of arithmetic is never reported as empty.
+
+Legacy `.doc`, `.ppt` and `.xls` are out of scope. They are OLE2 compound
+files, a different container format entirely, and their pure-Python support is
+poor; they fall through to the hex dump.
 
 ## Descending into containers
 
@@ -170,12 +184,17 @@ a folder: descending would bury the document under a dozen XML parts. `.7z` and
 `.rar` are not supported, because each needs a dependency this library does not
 take — supply your own `ArchiveOpener` via `archives=`.
 
+An office document is a zip, but it is a *document*: the part-name detection
+above claims it before the archive handler does, so `report.docx` gets a Word
+card rather than a folder of XML parts.
+
 ## Extras
 
 ```bash
 pip install "readeverything[images]"    # Pillow, for image handling
 pip install "readeverything[vision]"     # langchain-openai, for vision models
 pip install "readeverything[langchain]"  # langchain-core only, no OpenAI client
+pip install "readeverything[office]"     # python-docx, python-pptx, openpyxl, lxml
 ```
 
 On a machine with none of these installed — no Pillow, no vision client, no

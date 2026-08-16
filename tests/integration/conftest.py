@@ -8,6 +8,14 @@ from pathlib import Path
 import pytest
 
 from tests.fixtures_media import audio_only, ffmpeg_available, video_with_audio
+from tests.fixtures_office import (
+    docx_bytes,
+    odp_bytes,
+    ods_bytes,
+    odt_bytes,
+    pptx_bytes,
+    xlsx_bytes,
+)
 from tests.fixtures_pdf import blank, born_digital, scanned_like
 
 
@@ -40,4 +48,16 @@ def documents_root(tmp_path: Path) -> Path:
     )
     (tmp_path / "scan.pdf").write_bytes(scanned_like())
     (tmp_path / "blank.pdf").write_bytes(blank())
+    return tmp_path
+
+
+@pytest.fixture
+def office_root(tmp_path: Path) -> Path:
+    """One of each office family — Spec 9 §1.1's acceptance scenario."""
+    (tmp_path / "policy.docx").write_bytes(docx_bytes(comment="Check this number."))
+    (tmp_path / "deck.pptx").write_bytes(pptx_bytes(picture_on=(2,)))
+    (tmp_path / "book.xlsx").write_bytes(xlsx_bytes(formulas=True, cached=True))
+    (tmp_path / "notes.odt").write_bytes(odt_bytes())
+    (tmp_path / "slides.odp").write_bytes(odp_bytes())
+    (tmp_path / "sheet.ods").write_bytes(ods_bytes())
     return tmp_path

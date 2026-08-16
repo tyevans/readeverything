@@ -43,6 +43,17 @@ CONFINED: dict[str, set[str]] = {
     # cheap document facts, and the PDF handler extracts text — which is not a
     # probe's job, and no handler imports an adapter.
     "pypdfium2": {"adapters/pdfium_probe.py", "handlers/pdf.py"},
+    # The three OOXML readers, each confined to the one handler that speaks its
+    # document model. There is deliberately no shared "office" module importing
+    # all three: a caller who installed the extra for spreadsheets should not
+    # have a Word parser loaded, and one module would make that impossible.
+    "docx": {"handlers/office_word.py"},
+    "pptx": {"handlers/office_slides.py"},
+    "openpyxl": {"handlers/office_sheets.py"},
+    # ODF has no maintained reader — odfpy is unmaintained — so `adapters/odf.py`
+    # walks the flat XML parts itself. lxml is that walk and nothing else in the
+    # library touches it.
+    "lxml": {"adapters/odf.py"},
     "subprocess": set(),
     # asyncio's subprocess API is how binary_probe.py spawns external
     # executables; the other three files use asyncio only for async I/O, but
@@ -105,6 +116,14 @@ DEEPAGENTS_CONFINED_TEST_FILE = "integration/test_deepagents_composition.py"
 #: functions rather than reportlab itself.
 REPORTLAB_CONFINED_TEST_FILE = "fixtures_pdf.py"
 
+#: The three OOXML writers generate office fixtures at test time so no binary is
+#: committed (see tests/fixtures_office.py). Within `tests/` they are confined
+#: to the fixture module and to the fixture module's own guard test — which must
+#: read a generated document back with the same library that wrote it, or it
+#: would be guarding nothing. Every other test imports the fixture functions.
+OFFICE_WRITERS = frozenset({"docx", "pptx", "openpyxl"})
+OFFICE_WRITER_TEST_FILES = frozenset({"fixtures_office.py", "unit/test_office_fixtures.py"})
+
 
 def _imported_roots(tree: ast.AST) -> set[str]:
     roots: set[str] = set()
@@ -146,6 +165,16 @@ def test_reportlab_is_confined_to_the_fixture_module() -> None:
         ):
             violations.append(relative)
     assert not violations, f"reportlab imported outside its confined fixture module: {violations}"
+
+
+def test_the_office_writers_are_confined_to_the_fixture_module() -> None:
+    violations: list[str] = []
+    for path in TESTS.rglob("*.py"):
+        relative = str(path.relative_to(TESTS))
+        roots = _imported_roots(ast.parse(path.read_text()))
+        if roots & OFFICE_WRITERS and relative not in OFFICE_WRITER_TEST_FILES:
+            violations.append(relative)
+    assert not violations, f"office writers imported outside the fixture module: {violations}"
 
 
 def test_the_confinement_table_is_live() -> None:

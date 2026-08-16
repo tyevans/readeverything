@@ -108,4 +108,39 @@ class BBox:
             )
 
 
-type Locator = TimeSpan | PageRef | BBox | CharSpan | ByteRange
+@dataclass(frozen=True, slots=True)
+class CellRange:
+    """A rectangular block of cells in a named sheet, 0-indexed internally.
+
+    None of the five older locators addresses a cell. `CharSpan` into rendered
+    text is not it: the rendering is an artifact of the sheets handler's own
+    delimiter choice, so a citation into it stops meaning anything the moment
+    that delimiter changes. A cell's address does not depend on how the cell
+    was printed.
+
+    0-indexed here and A1 outside. A1 notation is presentation — it is
+    1-indexed, its columns are base-26 letters with no zero digit, and it
+    belongs to the handler that talks to callers about spreadsheets. The domain
+    counts from zero like everything else it addresses.
+    """
+
+    sheet: str
+    row: int
+    col: int
+    rows: int = 1
+    cols: int = 1
+
+    def __post_init__(self) -> None:
+        if not self.sheet.strip():
+            raise ValueError("sheet must not be blank")
+        if self.row < 0:
+            raise ValueError(f"row must not be negative, got {self.row}")
+        if self.col < 0:
+            raise ValueError(f"col must not be negative, got {self.col}")
+        if self.rows < 1:
+            raise ValueError(f"rows must be at least 1, got {self.rows}")
+        if self.cols < 1:
+            raise ValueError(f"cols must be at least 1, got {self.cols}")
+
+
+type Locator = TimeSpan | PageRef | BBox | CharSpan | ByteRange | CellRange

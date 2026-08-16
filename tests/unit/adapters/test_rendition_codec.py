@@ -10,7 +10,15 @@ import pytest
 
 from readeverything.adapters.rendition_codec import decode_rendition, encode_rendition
 from readeverything.domain.errors import DomainError
-from readeverything.domain.locators import BBox, ByteRange, CharSpan, Locator, PageRef, TimeSpan
+from readeverything.domain.locators import (
+    BBox,
+    ByteRange,
+    CellRange,
+    CharSpan,
+    Locator,
+    PageRef,
+    TimeSpan,
+)
 from readeverything.domain.rendition import (
     ImageContent,
     Rendition,
@@ -25,6 +33,8 @@ LOCATORS = [
     TimeSpan(0.0, 1.5),
     PageRef(3),
     BBox(page=None, x=0.0, y=0.0, w=1.0, h=1.0),
+    CellRange(sheet="Data", row=0, col=0),
+    CellRange(sheet="Data", row=2, col=1, rows=3, cols=4),
 ]
 
 CONTENTS = [
@@ -53,6 +63,22 @@ def test_every_rendition_shape_round_trips_exactly(
     assert restored == original
     assert type(restored.locator) is type(locator)
     assert type(restored.content) is type(content)
+
+
+def test_every_member_of_the_locator_union_is_encodable() -> None:
+    """Adding a locator without teaching this codec breaks caching for every
+    handler that produces it — and breaks it at cache-write time, far from the
+    `domain/locators.py` edit that caused it. `CellRange` was added in Spec 9
+    and this codec was the last consumer of the union to hear about it.
+
+    Derived from the union itself rather than from `LOCATORS`, so a locator
+    that nobody remembered to add to that list still fails here.
+    """
+    from typing import get_args
+
+    covered = {type(locator).__name__ for locator in LOCATORS}
+    declared = {member.__name__ for member in get_args(Locator.__value__)}
+    assert declared <= covered, f"locators with no round-trip case: {declared - covered}"
 
 
 def test_a_byte_range_never_comes_back_as_a_char_span() -> None:
